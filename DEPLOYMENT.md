@@ -1,6 +1,6 @@
 # Deployment
 
-The application targets Node.js 22 or newer. The Express app is the root
+The application targets Node.js 22.x. The Express app is the root
 `server.js` entry point; Vercel serves files in `public/` from its CDN and runs
 the Express app as a function.
 
@@ -24,6 +24,11 @@ The database role needs permission to create the storage table and index.
 Never commit either environment variable or paste its value into an issue.
 If a Canvas token or application secret was ever committed, rotate it; removing
 the file from the current revision does not remove it from repository history.
+
+If storage configuration is missing or invalid at startup, the site can still
+serve its static page, while API requests return HTTP 503 and the function logs
+include the initialization error. Ensure these variables are set for the
+deployment's Production environment, not only Preview.
 
 If existing encrypted records in `.data/` must be preserved, the deployment
 must use the same encryption key used to create them. Use the original

@@ -44,8 +44,16 @@ loadEnvFile(path.join(__dirname, 'canvas_api.env'));
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '.data'));
 const SECRET_FILE = path.join(DATA_DIR, 'master.key');
-const STORAGE = createStorage({ dataDir: DATA_DIR });
-const PERSISTENCE = STORAGE.mode;
+let STORAGE = null;
+let STORAGE_INITIALIZATION_ERROR = null;
+let PERSISTENCE = 'unavailable';
+try {
+  STORAGE = createStorage({ dataDir: DATA_DIR });
+  PERSISTENCE = STORAGE.mode;
+} catch (error) {
+  STORAGE_INITIALIZATION_ERROR = error;
+  console.error('Persistent storage initialization failed:', error.message);
+}
 const CANVAS_HTTP_AGENT = new Agent({
   connect: {
     lookup(hostname, options, callback) {
@@ -2274,6 +2282,9 @@ function createApp() {
   });
 
   app.use('/api', (req, res, next) => {
+    if (STORAGE_INITIALIZATION_ERROR) {
+      return res.status(503).json({ error: 'Persistent storage is unavailable.' });
+    }
     Promise.resolve(handleApiRequest(req, res)).catch(next);
   });
 
@@ -2326,7 +2337,9 @@ if (require.main === module) {
         process.exitCode = 1;
       }
       try {
-        await Promise.all([STORAGE.close(), CANVAS_HTTP_AGENT.close()]);
+        const closeOperations = [CANVAS_HTTP_AGENT.close()];
+        if (STORAGE) closeOperations.push(STORAGE.close());
+        await Promise.all(closeOperations);
       } catch (closeError) {
         console.error('Could not close server resources cleanly:', closeError.message);
         process.exitCode = 1;
