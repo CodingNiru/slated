@@ -3,15 +3,25 @@
   "version": "1.0.0",
   "description": "Personal Canvas LMS Student Dashboard",
   "main": "server.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
     "build:css": "tailwindcss -c ./tailwind.config.js -i ./public/tailwind.input.css -o ./public/tailwind.generated.css --minify",
-    "build": "npm run build:css && node build-static.js"
+    "build": "npm run build:static",
+    "build:static": "npm run build:css && node build-static.js",
+    "vercel-build": "npm run build:css",
+    "db:migrate": "node scripts/migrate-db.js",
+    "db:import-local": "node scripts/import-local-store.js",
+    "test": "node --test"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "pg": "^8.23.1",
+    "undici": "^7.30.2"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.17"

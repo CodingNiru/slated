@@ -72,20 +72,20 @@ function cleanJs(js) {
 }
 
 async function buildBundle() {
-  const env = {
-    ...parseEnvFile(path.join(__dirname, 'canvas_api.env')),
-    ...parseEnvFile(path.join(__dirname, '.env')),
-  };
-
-  const baseUrl = (env.CANVAS_BASE_URL || 'https://wcpss.instructure.com')
+  const includeSnapshot = process.env.BUILD_CANVAS_SNAPSHOT === 'true';
+  const baseUrl = (process.env.CANVAS_BASE_URL || 'https://wcpss.instructure.com')
     .trim()
     .replace(/^(https?):\/([^/])/i, '$1://$2')
     .replace(/\/+$/, '');
-  const token = (env.CANVAS_API_TOKEN || '').trim();
+  const token = includeSnapshot ? (process.env.CANVAS_API_TOKEN || '').trim() : '';
 
   let encryptedSnapshotScript = '';
 
-  if (token) {
+  if (includeSnapshot && !token) {
+    throw new Error('CANVAS_API_TOKEN is required when BUILD_CANVAS_SNAPSHOT=true.');
+  }
+
+  if (includeSnapshot) {
     try {
       const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
       const [userRes, coursesRes, eventsRes] = await Promise.all([
@@ -278,7 +278,8 @@ async function buildBundle() {
         `Encrypted curated snapshot (${snapshotPayload.courses.length} courses, ${snapshotPayload.assignments.length} assignments, ${snapshotPayload.announcements.length} announcements) with PBKDF2-SHA256 + AES-256-GCM.`
       );
     } catch (err) {
-      console.warn('Could not fetch live snapshot during build:', err.message);
+      console.error('Could not build the requested Canvas snapshot:', err.message);
+      throw err;
     }
   }
 

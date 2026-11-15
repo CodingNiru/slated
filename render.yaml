@@ -3,8 +3,8 @@ services:
     name: slated-canvas-dashboard
     env: node
     plan: free
-    buildCommand: npm install
-    startCommand: node server.js
+    buildCommand: npm ci --include=dev && npm run build:css
+    startCommand: npm start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV

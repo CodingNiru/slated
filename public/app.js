@@ -1,4 +1,90 @@
 (() => {
+  let browserStorageIssueReported = false;
+
+  function reportBrowserStorageIssue(error) {
+    if (browserStorageIssueReported) return;
+    browserStorageIssueReported = true;
+    console.warn('Browser storage is unavailable or contains invalid data:', error);
+    const notify = () => showToast('Browser storage is unavailable; some changes may not persist.', 5000);
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', notify, { once: true });
+    } else {
+      setTimeout(notify, 0);
+    }
+  }
+
+  function getStoredItem(storageName, key) {
+    try {
+      return window[storageName].getItem(key);
+    } catch (error) {
+      reportBrowserStorageIssue(error);
+      return null;
+    }
+  }
+
+  function setStoredItem(storageName, key, value) {
+    try {
+      window[storageName].setItem(key, value);
+      return true;
+    } catch (error) {
+      reportBrowserStorageIssue(error);
+      return false;
+    }
+  }
+
+  function removeStoredItem(storageName, key) {
+    try {
+      window[storageName].removeItem(key);
+      return true;
+    } catch (error) {
+      reportBrowserStorageIssue(error);
+      return false;
+    }
+  }
+
+  function readStoredJson(key, fallback, isValid) {
+    const raw = getStoredItem('localStorage', key);
+    if (raw === null) return fallback;
+    try {
+      const value = JSON.parse(raw);
+      if (!isValid(value)) throw new TypeError(`Invalid stored value for ${key}.`);
+      return value;
+    } catch (error) {
+      reportBrowserStorageIssue(error);
+      removeStoredItem('localStorage', key);
+      return fallback;
+    }
+  }
+
+  let unsafeUrlReported = false;
+  function safeHttpUrl(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+      const url = new URL(value, window.location.href);
+      if (
+        (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+        url.username ||
+        url.password
+      ) {
+        if (!unsafeUrlReported) {
+          unsafeUrlReported = true;
+          console.warn('An unsafe external URL was omitted.');
+        }
+        return null;
+      }
+      return url.href;
+    } catch (error) {
+      if (!unsafeUrlReported) {
+        unsafeUrlReported = true;
+        console.warn('An invalid external URL was omitted:', error.message);
+      }
+      return null;
+    }
+  }
+
+  const localDateKey = (date = new Date()) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
   const state = {
     apiOrigin: '',
     cloudStaticMode: false,
@@ -19,12 +105,14 @@
     whatIfScores: {},
     whatIfCustomTests: {},
     targetGradeInputs: {}, // courseId -> { targetPercent: 90, nextTestPoints: 100 }
-    customTasks: JSON.parse(localStorage.getItem('atelier_custom_tasks') || '[]'),
-    checkedIds: new Set(JSON.parse(localStorage.getItem('atelier_checked_ids') || '[]')),
-    inClassRetakeIds: new Set(JSON.parse(localStorage.getItem('slated_inclass_retakes') || '[]')),
-    packedSupplyIds: new Set(JSON.parse(localStorage.getItem('slated_packed_supplies') || '[]')),
-    savedBriefingIds: new Set(JSON.parse(localStorage.getItem('atelier_saved_briefings') || 'null') || []),
-    savedBriefingsInitialized: Boolean(localStorage.getItem('atelier_saved_briefings')),
+    customTasks: readStoredJson('atelier_custom_tasks', [], Array.isArray),
+    checkedIds: new Set(readStoredJson('atelier_checked_ids', [], Array.isArray)),
+    inClassRetakeIds: new Set(readStoredJson('slated_inclass_retakes', [], Array.isArray)),
+    packedSupplyIds: new Set(readStoredJson('slated_packed_supplies', [], Array.isArray)),
+    savedBriefingIds: new Set(
+      readStoredJson('atelier_saved_briefings', [], (value) => value === null || Array.isArray(value)) || []
+    ),
+    savedBriefingsInitialized: Boolean(getStoredItem('localStorage', 'atelier_saved_briefings')),
     expandedAnnouncementIds: new Set(),
     securityAuditLog: [],
     selectedCourseId: 'all',
@@ -42,7 +130,7 @@
     inspectorTab: 'overview',
     searchQuery: '',
     calendarDate: new Date(),
-    palette: localStorage.getItem('slated_palette') || 'obsidian',
+    palette: getStoredItem('localStorage', 'slated_palette') || 'obsidian',
     studyLab: {
       activeDeck: 'calc_log',
       activeProblemIdx: 0,
@@ -64,13 +152,15 @@
       label: 'Study Session',
       intervalId: null,
     },
-    soundMuted: localStorage.getItem('slated_sound_muted') === 'true',
-    compactView: localStorage.getItem('slated_compact_view') === 'true',
+    soundMuted: getStoredItem('localStorage', 'slated_sound_muted') === 'true',
+    compactView: getStoredItem('localStorage', 'slated_compact_view') === 'true',
     resourceSearch: '',
     resourceClassFilter: 'all',
     resourceCategoryFilter: 'all',
     announcementSearch: '',
-    pinnedAnnouncementIds: new Set(JSON.parse(localStorage.getItem('slated_pinned_announcements') || '[]')),
+    pinnedAnnouncementIds: new Set(
+      readStoredJson('slated_pinned_announcements', [], Array.isArray)
+    ),
     resources: [],
     pacingCalendar: null,
   };
@@ -952,6 +1042,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (!bundleStr || !rawToken) return null;
     const parts = String(bundleStr).split('.');
     if (parts.length !== 3) return null;
+    if (!window.crypto?.subtle) {
+      throw new Error('This browser does not support secure snapshot decryption.');
+    }
     const fromB64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const salt = fromB64(parts[0]);
     const iv = fromB64(parts[1]);
@@ -968,18 +1061,24 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
   // Zero-Config Google Account Device Vault (AES-256-GCM encrypted in localStorage)
   function getOrCreateDeviceSecret() {
-    let secret = localStorage.getItem('slated_device_key_v1');
+    if (!window.crypto?.getRandomValues) {
+      throw new Error('This browser cannot create a secure device key.');
+    }
+    let secret = getStoredItem('localStorage', 'slated_device_key_v1');
     if (!secret) {
       const bytes = new Uint8Array(24);
       window.crypto.getRandomValues(bytes);
       secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-      localStorage.setItem('slated_device_key_v1', secret);
+      setStoredItem('localStorage', 'slated_device_key_v1', secret);
     }
     return secret;
   }
 
   async function saveEncryptedGoogleVault({ canvasBaseUrl, canvasApiToken, googleEmail, displayName }) {
     try {
+      if (!window.crypto?.subtle || !window.crypto?.getRandomValues) {
+        throw new Error('This browser does not support secure account storage.');
+      }
       const secret = getOrCreateDeviceSecret();
       const salt = new Uint8Array(16);
       const iv = new Uint8Array(12);
@@ -1000,21 +1099,25 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       );
       const toB64 = (u8) => btoa(String.fromCharCode(...u8));
       const bundle = `${toB64(salt)}.${toB64(iv)}.${toB64(new Uint8Array(cipherBuf))}`;
-      localStorage.setItem('slated_google_vault_enc', bundle);
-      localStorage.setItem(
+      setStoredItem('localStorage', 'slated_google_vault_enc', bundle);
+      setStoredItem(
+        'localStorage',
         'slated_google_profile_meta',
         JSON.stringify({
           googleEmail: googleEmail || 'Connected Account',
           displayName: displayName || 'Student',
         })
       );
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Could not save the encrypted account on this device:', error);
+      showToast('This browser could not save the encrypted account. You may need to reconnect next time.', 5000);
+    }
   }
 
   async function loadEncryptedGoogleVault() {
     try {
-      const bundle = localStorage.getItem('slated_google_vault_enc');
-      const secret = localStorage.getItem('slated_device_key_v1');
+      const bundle = getStoredItem('localStorage', 'slated_google_vault_enc');
+      const secret = getStoredItem('localStorage', 'slated_device_key_v1');
       if (!bundle || !secret) return null;
       const parts = bundle.split('.');
       if (parts.length !== 3) return null;
@@ -1026,7 +1129,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         fromB64(parts[2])
       );
       return JSON.parse(new TextDecoder().decode(plainBuf));
-    } catch (_) {
+    } catch (error) {
+      console.warn('Could not load the saved encrypted account:', error);
       return null;
     }
   }
@@ -1034,8 +1138,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   function renderSavedGoogleBox() {
     if (!els.savedGoogleAccountBox) return;
     try {
-      const metaRaw = localStorage.getItem('slated_google_profile_meta');
-      const hasVault = Boolean(localStorage.getItem('slated_google_vault_enc'));
+      const metaRaw = getStoredItem('localStorage', 'slated_google_profile_meta');
+      const hasVault = Boolean(getStoredItem('localStorage', 'slated_google_vault_enc'));
       if (!metaRaw || !hasVault) {
         els.savedGoogleAccountBox.classList.add('hidden');
         return;
@@ -1048,7 +1152,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       els.savedGoogleAvatar.textContent = name.charAt(0).toUpperCase();
       els.continueGoogleFirstName.textContent = name.split(' ')[0];
       els.savedGoogleAccountBox.classList.remove('hidden');
-    } catch (_) {
+    } catch (error) {
+      console.warn('Saved account metadata is invalid:', error);
       els.savedGoogleAccountBox.classList.add('hidden');
     }
   }
@@ -1081,7 +1186,22 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     token = token.replace(/^["']|["']$/g, '').trim();
     url = url.replace(/^(https?):\/([^/])/i, '$1://$2').replace(/\/+$/, '');
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-    return { token, url };
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      throw new Error('Please enter a valid Canvas school URL.');
+    }
+    if (parsedUrl.protocol !== 'https:') {
+      throw new Error('Canvas school URLs must use HTTPS.');
+    }
+    if (parsedUrl.username || parsedUrl.password) {
+      throw new Error('Canvas URLs must not contain embedded credentials.');
+    }
+    if (parsedUrl.port && parsedUrl.port !== '443') {
+      throw new Error('Canvas URLs must use the standard HTTPS port.');
+    }
+    return { token, url: `${parsedUrl.protocol}//${parsedUrl.hostname}` };
   }
 
   function maskTokenClient(token) {
@@ -1101,33 +1221,43 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   const DAY_MS = 86400 * 1000;
 
   async function tokenFingerprint(token) {
-    const buf = await window.crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(String(token || '').trim())
-    );
-    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0'))
-      .join('')
-      .slice(0, 16);
+    if (!window.crypto?.subtle) return null;
+    try {
+      const buf = await window.crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(String(token || '').trim())
+      );
+      return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0'))
+        .join('')
+        .slice(0, 16);
+    } catch (error) {
+      console.warn('Token expiry tracking is unavailable in this browser:', error);
+      return null;
+    }
   }
 
   function getTokenLifecycle() {
     try {
-      const lc = JSON.parse(localStorage.getItem(TOKEN_LIFECYCLE_KEY) || 'null');
+      const lc = readStoredJson(TOKEN_LIFECYCLE_KEY, null, (value) => value === null || typeof value === 'object');
       return lc && lc.expiresAt ? lc : null;
-    } catch (_) {
+    } catch (error) {
+      console.warn('Could not read token expiry information:', error);
       return null;
     }
   }
 
   function saveTokenLifecycle(lc) {
     try {
-      localStorage.setItem(TOKEN_LIFECYCLE_KEY, JSON.stringify(lc));
-    } catch (_) {}
+      setStoredItem('localStorage', TOKEN_LIFECYCLE_KEY, JSON.stringify(lc));
+    } catch (error) {
+      console.warn('Could not save token expiry information:', error);
+    }
   }
 
   async function registerTokenLifecycle(token, baseUrl) {
     if (!token) return;
     const fp = await tokenFingerprint(token);
+    if (!fp) return;
     const existing = getTokenLifecycle();
     if (existing && existing.fingerprint === fp) {
       existing.baseUrl = baseUrl || existing.baseUrl;
@@ -1152,8 +1282,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   }
 
   function wipeLocalTokenVault() {
-    sessionStorage.removeItem('atelier_active_token_session');
-    localStorage.removeItem('slated_google_vault_enc');
+    removeStoredItem('sessionStorage', 'atelier_active_token_session');
+    removeStoredItem('localStorage', 'slated_google_vault_enc');
     browserRamCreds = null;
     unlockedSnapshotData = null;
   }
@@ -1173,7 +1303,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (daysLeft > 0) return false;
     if (lc.autoWipe !== false) {
       wipeLocalTokenVault();
-      localStorage.removeItem(TOKEN_LIFECYCLE_KEY);
+      removeStoredItem('localStorage', TOKEN_LIFECYCLE_KEY);
       showExpiredTokenNotice(
         'Your Canvas token reached its 30-day limit and was erased from this device. Generate a fresh token in Canvas and paste it below.'
       );
@@ -1184,7 +1314,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
   function handleTokenRejected() {
     wipeLocalTokenVault();
-    localStorage.removeItem(TOKEN_LIFECYCLE_KEY);
+    removeStoredItem('localStorage', TOKEN_LIFECYCLE_KEY);
     showExpiredTokenNotice(
       'Canvas rejected this token — it expired or was revoked. It has been erased from this device. Paste a fresh token to continue.'
     );
@@ -1202,7 +1332,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     const base = (lc && lc.baseUrl) || state.canvasBaseUrl || 'https://wcpss.instructure.com';
     const renewUrl = `${base.replace(/\/+$/, '')}/profile/settings`;
 
-    if (renewLink) renewLink.href = renewUrl;
+    if (renewLink) renewLink.href = safeHttpUrl(renewUrl) || '#';
 
     if (!lc || daysLeft == null) {
       if (chip) chip.classList.add('hidden');
@@ -1253,7 +1383,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
             <p class="text-xs secondary-copy">Generate a new one in Canvas, then paste it under your account. Your tasks, briefings, and settings stay put.</p>
           </div>
           <div class="flex items-center gap-2 shrink-0">
-            <a href="${escapeHtml(renewUrl)}" target="_blank" rel="noopener noreferrer" class="studio-btn studio-btn-primary text-xs py-2 px-3">Open Canvas Settings</a>
+            <a href="${escapeHtml(safeHttpUrl(renewUrl) || '#')}" target="_blank" rel="noopener noreferrer" class="studio-btn studio-btn-primary text-xs py-2 px-3">Open Canvas Settings</a>
             <button type="button" data-open-token-modal class="studio-btn tone-surface-2 text-xs py-2 px-3">Paste New Token</button>
           </div>`;
         banner.classList.remove('hidden');
@@ -1294,7 +1424,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     const valid = ['obsidian', 'paper', 'midnight', 'forest'];
     const chosen = valid.includes(paletteName) ? paletteName : 'obsidian';
     state.palette = chosen;
-    localStorage.setItem('slated_palette', chosen);
+    setStoredItem('localStorage', 'slated_palette', chosen);
     els.html.setAttribute('data-palette', chosen);
     if (chosen === 'paper') {
       els.html.classList.remove('dark');
@@ -1312,6 +1442,11 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   function showToast(message, actionText = null, actionFn = null) {
     if (!els.toastBanner || !els.toastMessage) return;
     clearTimeout(showToast._timer);
+    const durationMs =
+      typeof actionText === 'number' && Number.isFinite(actionText) && actionText > 0
+        ? actionText
+        : 4500;
+    if (typeof actionText === 'number') actionText = null;
 
     if (actionText && typeof actionFn === 'function') {
       els.toastMessage.innerHTML = `${escapeHtml(message)} <button type="button" id="toastActionBtn" class="ml-3 underline font-bold" style="color: var(--accent); cursor: pointer;">${escapeHtml(actionText)}</button>`;
@@ -1330,7 +1465,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     els.toastBanner.classList.remove('hidden');
     showToast._timer = setTimeout(() => {
       els.toastBanner.classList.add('hidden');
-    }, 4500);
+    }, durationMs);
   }
 
   function launchConfetti(originX, originY) {
@@ -1413,7 +1548,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         }
       }
       requestAnimationFrame(step);
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Celebration animation is unavailable:', error);
+    }
   }
 
   function playSuccessChime() {
@@ -1442,7 +1579,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         osc.start(ctx.currentTime + idx * 0.065);
         osc.stop(ctx.currentTime + idx * 0.065 + 0.5);
       });
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Success sound is unavailable:', error);
+    }
   }
 
   function escapeHtml(str) {
@@ -1570,7 +1709,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   
   function loadScheduleConfig() {
     try {
-      const raw = localStorage.getItem('slated_schedule_config');
+      const raw = getStoredItem('localStorage', 'slated_schedule_config');
       if (!raw) return JSON.parse(JSON.stringify(DEFAULT_SCHEDULE_CONFIG));
       const parsed = JSON.parse(raw);
       return {
@@ -1579,7 +1718,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         periods: { ...DEFAULT_SCHEDULE_CONFIG.periods, ...(parsed.periods || {}) },
         courseOverrides: { ...(parsed.courseOverrides || {}) },
       };
-    } catch (_) {
+    } catch (error) {
+      console.warn('Stored schedule settings are invalid; using defaults:', error);
+      removeStoredItem('localStorage', 'slated_schedule_config');
       return JSON.parse(JSON.stringify(DEFAULT_SCHEDULE_CONFIG));
     }
   }
@@ -1588,9 +1729,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
   function saveScheduleConfig() {
     try {
-      localStorage.setItem('slated_schedule_config', JSON.stringify(scheduleConfig));
-    } catch (_) {
-      // Ignore storage quota errors
+      setStoredItem('localStorage', 'slated_schedule_config', JSON.stringify(scheduleConfig));
+    } catch (error) {
+      console.warn('Could not save schedule settings:', error);
     }
   }
 
@@ -2054,7 +2195,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   function isPastInClassAssessment(a, referenceTime = Date.now()) {
     if (!isInClassOrPaperWork(a) && a.no_online_submission !== true) return false;
     const due = a.effective_due_at || a.due_at;
-    if (!due) return true; // Undated in-class activity
+    if (!due) return false;
     const dueMs = new Date(due).getTime();
     if (Number.isNaN(dueMs)) return false;
     // If due date has passed, in-class assignment/test concluded
@@ -2085,10 +2226,10 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     } else {
       state.inClassRetakeIds.add(key);
       state.checkedIds.delete(key);
-      localStorage.setItem('atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
+      setStoredItem('localStorage', 'atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
       showToast('Moved to active queue: Absent / Retake Needed.');
     }
-    localStorage.setItem('slated_inclass_retakes', JSON.stringify(Array.from(state.inClassRetakeIds)));
+    setStoredItem('localStorage', 'slated_inclass_retakes', JSON.stringify(Array.from(state.inClassRetakeIds)));
     renderAll();
   }
 
@@ -3198,7 +3339,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
             sub: `${sAnn.title} (${sAnn.author_name})`,
             action: () => {
               closeCmdPalette();
-              window.open(f.url, '_blank', 'noopener,noreferrer');
+              const safeUrl = safeHttpUrl(f.url);
+              if (safeUrl) window.open(safeUrl, '_blank', 'noopener,noreferrer');
             },
           });
         }
@@ -3299,12 +3441,14 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   function openTokenModal() {
     if (!els.tokenModalBackdrop) return;
     els.tokenFormError.classList.add('hidden');
-    try {
-      const meta = JSON.parse(localStorage.getItem('slated_google_profile_meta') || '{}');
-      if (els.modalGoogleEmailInput && meta.googleEmail) {
-        els.modalGoogleEmailInput.value = meta.googleEmail;
-      }
-    } catch (_) {}
+    const meta = readStoredJson(
+      'slated_google_profile_meta',
+      {},
+      (value) => value && typeof value === 'object' && !Array.isArray(value)
+    );
+    if (els.modalGoogleEmailInput && meta.googleEmail) {
+      els.modalGoogleEmailInput.value = meta.googleEmail;
+    }
 
     if (state.credentials.configured) {
       els.currentTokenStatusBox.classList.remove('hidden');
@@ -3326,7 +3470,6 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
   async function checkSessionAndLoad() {
     const isStaticDeploy =
-      window.location.hostname.endsWith('.beacon.host') ||
       window.location.hostname.endsWith('.github.io') ||
       Boolean(window.__ENCRYPTED_CANVAS_SNAPSHOT__);
 
@@ -3335,7 +3478,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       state.apiOrigin = '';
       renderSavedGoogleBox();
 
-      const savedTokenSession = sessionStorage.getItem('atelier_active_token_session');
+      const savedTokenSession = getStoredItem('sessionStorage', 'atelier_active_token_session');
       if (savedTokenSession && !browserRamCreds) {
         try {
           const parsed = JSON.parse(savedTokenSession);
@@ -3348,7 +3491,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
             );
             return;
           }
-        } catch (_) {}
+        } catch (error) {
+          console.warn('Saved session data is invalid:', error);
+        }
       }
 
       await updateViewForAuthState();
@@ -3357,7 +3502,14 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
     const tokenWasErased = enforceTokenExpiry();
     if (tokenWasErased && !state.cloudStaticMode) {
-      await apiFetch('/api/user/credentials', { method: 'DELETE' }).catch(() => {});
+      try {
+        const response = await apiFetch('/api/user/credentials', { method: 'DELETE' });
+        if (!response.ok) {
+          console.warn(`Could not remove expired server credentials (HTTP ${response.status}).`);
+        }
+      } catch (error) {
+        console.warn('Could not remove expired server credentials:', error);
+      }
     }
     renderSavedGoogleBox();
 
@@ -3381,7 +3533,10 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         await updateViewForAuthState();
         return;
       }
-    } catch (_) {}
+      console.warn(`Application session endpoint returned HTTP ${res.status}.`);
+    } catch (error) {
+      console.warn('Could not reach the application session endpoint; trying fallback mode:', error);
+    }
 
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
       try {
@@ -3401,12 +3556,16 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
             await updateViewForAuthState();
             return;
           }
+        } else {
+          console.warn(`Local development API returned HTTP ${localRes.status}.`);
         }
-      } catch (_) {}
+      } catch (error) {
+        console.warn('Could not reach the local development API:', error);
+      }
     }
 
     state.cloudStaticMode = true;
-    const savedTokenSession = sessionStorage.getItem('atelier_active_token_session');
+    const savedTokenSession = getStoredItem('sessionStorage', 'atelier_active_token_session');
     if (savedTokenSession && !browserRamCreds) {
       try {
         const parsed = JSON.parse(savedTokenSession);
@@ -3419,7 +3578,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           );
           return;
         }
-      } catch (_) {}
+      } catch (error) {
+        console.warn('Saved browser session could not be restored:', error);
+      }
     }
 
     if (browserRamCreds) {
@@ -3448,7 +3609,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           token,
           window.__ENCRYPTED_CANVAS_SNAPSHOT__
         );
-      } catch (_) {
+      } catch (error) {
+        console.warn('Encrypted dashboard snapshot could not be decrypted:', error);
         unlockedSnapshotData = null;
       }
     }
@@ -3465,7 +3627,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       googleEmail: resolvedEmail,
       displayName: resolvedName,
     };
-    sessionStorage.setItem('atelier_active_token_session', JSON.stringify(browserRamCreds));
+    setStoredItem('sessionStorage', 'atelier_active_token_session', JSON.stringify(browserRamCreds));
 
     await saveEncryptedGoogleVault({
       canvasBaseUrl: url,
@@ -3575,7 +3737,11 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
     els.userProfileBar.classList.remove('hidden');
     els.userProfileBar.classList.add('flex');
-    const savedMeta = JSON.parse(localStorage.getItem('slated_google_profile_meta') || '{}');
+    const savedMeta = readStoredJson(
+      'slated_google_profile_meta',
+      {},
+      (value) => value && typeof value === 'object' && !Array.isArray(value)
+    );
     const badgeLabel =
       savedMeta.googleEmail && savedMeta.googleEmail.includes('@')
         ? savedMeta.googleEmail
@@ -3585,7 +3751,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     state.canvasBaseUrl = state.credentials.canvasBaseUrl || 'https://wcpss.instructure.com';
     renderTokenLifecycleUI();
     if (els.canvasInstanceLink) {
-      els.canvasInstanceLink.href = state.canvasBaseUrl;
+      els.canvasInstanceLink.href = safeHttpUrl(state.canvasBaseUrl) || '#';
       els.canvasInstanceLink.textContent = state.canvasBaseUrl.replace(/^https?:\/\//, '');
     }
 
@@ -3624,7 +3790,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
     if (state.checkedIds.has(key)) {
       state.checkedIds.delete(key);
-      localStorage.setItem('atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
+      setStoredItem('localStorage', 'atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
       renderAll();
       showToast('Restored to active queue.');
     } else {
@@ -3643,11 +3809,11 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       }
 
       state.checkedIds.add(key);
-      localStorage.setItem('atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
+      setStoredItem('localStorage', 'atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
 
       showToast("Completed! Phew, that's done.", 'Undo', () => {
         state.checkedIds.delete(key);
-        localStorage.setItem('atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
+        setStoredItem('localStorage', 'atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
         renderAll();
         showToast('Restored to active queue.');
       });
@@ -3919,7 +4085,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       if (state.savedBriefingIds.size >= 6) break;
     }
     state.savedBriefingsInitialized = true;
-    localStorage.setItem(
+    setStoredItem(
+      'localStorage',
       'atelier_saved_briefings',
       JSON.stringify(Array.from(state.savedBriefingIds))
     );
@@ -3934,7 +4101,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       state.savedBriefingIds.add(key);
       showToast('Pinned to Saved Briefings.');
     }
-    localStorage.setItem(
+    setStoredItem(
+      'localStorage',
       'atelier_saved_briefings',
       JSON.stringify(Array.from(state.savedBriefingIds))
     );
@@ -3984,7 +4152,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                   .map(
                     (f) =>
                       `<a href="${escapeHtml(
-                        f.url
+                        safeHttpUrl(f.url) || '#'
                       )}" target="_blank" rel="noopener noreferrer" class="context-tag hover:underline" style="color: var(--accent);">${escapeHtml(
                         f.display_name
                       )}</a>`
@@ -4003,7 +4171,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
             </div>
             <h3 class="text-base font-bold leading-snug">
               <a href="${escapeHtml(
-                ann.html_url || state.canvasBaseUrl
+                safeHttpUrl(ann.html_url || state.canvasBaseUrl) || '#'
               )}" target="_blank" rel="noopener noreferrer" class="hover:underline">
                 ${escapeHtml(ann.title)}
               </a>
@@ -4017,7 +4185,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                   ann.id
                 )}" class="underline" style="color: var(--ink-secondary);">Remove</button>
                 <a href="${escapeHtml(
-                  ann.html_url || state.canvasBaseUrl
+                  safeHttpUrl(ann.html_url || state.canvasBaseUrl) || '#'
                 )}" target="_blank" rel="noopener noreferrer" class="underline" style="color: var(--accent);">Open in Canvas</a>
               </div>
             </div>
@@ -4110,7 +4278,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                                   ${
                                     it.html_url
                                       ? `<a href="${escapeHtml(
-                                          it.html_url
+                                          safeHttpUrl(it.html_url) || '#'
                                         )}" target="_blank" rel="noopener noreferrer" class="underline shrink-0" style="color: var(--accent);">Open</a>`
                                       : ''
                                   }
@@ -4456,9 +4624,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           state.whatIfCustomTests[cid] = (state.whatIfCustomTests[cid] || []).filter(
             (t) => String(t.id) !== String(tid)
           );
-          renderCourseInspector();
           renderCourseCards();
         });
+        inp.addEventListener('change', () => renderCourseInspector());
       });
 
       els.courseInspectorBody.querySelectorAll('[data-whatif-input]').forEach((inp) => {
@@ -4502,7 +4670,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                     .map(
                       (f) =>
                         `<a href="${escapeHtml(
-                          f.url
+                          safeHttpUrl(f.url) || '#'
                         )}" target="_blank" rel="noopener noreferrer" class="context-tag hover:underline" style="color: var(--accent);">${escapeHtml(
                           f.display_name
                         )}</a>`
@@ -4523,7 +4691,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
               <div class="pt-2 flex items-center justify-between text-xs" style="border-top: 1px solid var(--surface-2);">
                 <span class="tabular secondary-copy">${escapeHtml(formatDateTime(ann.posted_at))}</span>
                 <a href="${escapeHtml(
-                  ann.html_url || state.canvasBaseUrl
+                  safeHttpUrl(ann.html_url || state.canvasBaseUrl) || '#'
                 )}" target="_blank" rel="noopener noreferrer" class="underline font-bold" style="color: var(--accent);">Open in Canvas</a>
               </div>
             </article>
@@ -4956,7 +5124,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         } else {
           state.packedSupplyIds.add(supplyName);
         }
-        localStorage.setItem('slated_packed_supplies', JSON.stringify(Array.from(state.packedSupplyIds)));
+        setStoredItem('localStorage', 'slated_packed_supplies', JSON.stringify(Array.from(state.packedSupplyIds)));
         renderGameplanStrip(baseFilteredAssignments);
       });
     });
@@ -5342,7 +5510,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         const topGradeText = avgObj && avgObj.percent != null
           ? `${avgObj.percent}% (${avgObj.letterGrade})`
           : (dueSoonCount === 0 ? 'Caught up' : `${dueSoonCount} to-do`);
-        const courseUrl = course.html_url || `${state.canvasBaseUrl}/courses/${course.id}`;
+        const courseUrl = safeHttpUrl(course.html_url || `${state.canvasBaseUrl}/courses/${course.id}`) || '#';
 
         return `
           <article
@@ -5445,7 +5613,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
               .map(
                 (f) =>
                   `<a href="${escapeHtml(
-                    f.url
+                    safeHttpUrl(f.url) || '#'
                   )}" target="_blank" rel="noopener noreferrer" class="context-tag hover:underline" style="color: var(--accent);">${escapeHtml(
                     f.display_name
                   )}</a>`
@@ -5537,7 +5705,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
               ${
                 assignmentUrl
                   ? `<a href="${escapeHtml(
-                      assignmentUrl
+                      safeHttpUrl(assignmentUrl) || '#'
                     )}" target="_blank" rel="noopener noreferrer" class="hover:underline">${escapeHtml(
                       assignment.name
                     )}</a>`
@@ -5609,7 +5777,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                                   .map(
                                     (g) =>
                                       `<a
-                                        href="${escapeHtml(g.url)}"
+                                        href="${escapeHtml(safeHttpUrl(g.url) || '#')}"
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded tone-surface hover:opacity-80 transition"
@@ -5702,7 +5870,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                   )}" class="underline" style="color: var(--urgent);">Delete</button>`
                 : assignmentUrl
                 ? `<a href="${escapeHtml(
-                    assignmentUrl
+                    safeHttpUrl(assignmentUrl) || '#'
                   )}" target="_blank" rel="noopener noreferrer" class="underline" style="color: var(--accent);">Canvas</a>`
                 : ''
             }
@@ -6041,7 +6209,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       btn.addEventListener('click', () => {
         const id = btn.getAttribute('data-delete-custom');
         state.customTasks = state.customTasks.filter((t) => String(t.id) !== String(id));
-        localStorage.setItem('atelier_custom_tasks', JSON.stringify(state.customTasks));
+        setStoredItem('localStorage', 'atelier_custom_tasks', JSON.stringify(state.customTasks));
         renderAll();
       });
     });
@@ -6153,7 +6321,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                   .map(
                     (f) =>
                       `<a href="${escapeHtml(
-                        f.url
+                        safeHttpUrl(f.url) || '#'
                       )}" target="_blank" rel="noopener noreferrer" class="context-tag hover:underline" style="color: var(--accent);">${escapeHtml(
                         f.display_name
                       )}</a>`
@@ -6182,7 +6350,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
               <h3 class="text-base font-bold leading-snug">
                 <a
-                  href="${escapeHtml(ann.html_url || state.canvasBaseUrl)}"
+                  href="${escapeHtml(                  safeHttpUrl(ann.html_url || state.canvasBaseUrl) || '#')}"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="hover:underline"
@@ -6219,7 +6387,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                   ${isSaved ? 'Saved' : 'Save'}
                 </button>
                 <a
-                  href="${escapeHtml(ann.html_url || state.canvasBaseUrl)}"
+                  href="${escapeHtml(safeHttpUrl(ann.html_url || state.canvasBaseUrl) || '#')}"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="underline"
@@ -6244,7 +6412,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           state.pinnedAnnouncementIds.add(id);
           showToast('Pinned announcement to top.');
         }
-        localStorage.setItem('slated_pinned_announcements', JSON.stringify(Array.from(state.pinnedAnnouncementIds)));
+        setStoredItem('localStorage', 'slated_pinned_announcements', JSON.stringify(Array.from(state.pinnedAnnouncementIds)));
         renderAll();
       });
     });
@@ -6328,7 +6496,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           const u = getUrgencyInfo(ev);
           return `
             <a
-              href="${escapeHtml(ev.html_url || '#deadlinesSection')}"
+              href="${escapeHtml(safeHttpUrl(ev.html_url || '#deadlinesSection') || '#deadlinesSection')}"
               ${ev.html_url ? 'target="_blank" rel="noopener noreferrer"' : ''}
               title="${escapeHtml(ev.name)}"
               class="block truncate px-1.5 py-0.5 text-[11px] font-semibold ${u.chipClass} hover:opacity-85"
@@ -7962,7 +8130,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
             <div class="flex items-center gap-2">
               ${item.preview_url ? `
                 <a
-                  href="${escapeHtml(item.preview_url)}"
+                  href="${escapeHtml(safeHttpUrl(item.preview_url) || '#')}"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="studio-btn tone-surface-2 text-xs py-1 px-2.5"
@@ -7972,7 +8140,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
                 </a>
               ` : ''}
               <a
-                href="${escapeHtml(item.download_url)}"
+                href="${escapeHtml(safeHttpUrl(item.download_url) || '#')}"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="studio-btn studio-btn-primary text-xs py-1 px-3 font-bold"
@@ -8013,7 +8181,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (!els.pacingTimelineList) return;
     const cal = state.pacingCalendar || CONDER_PACING_CALENDAR;
     const milestones = cal.milestones || [];
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = localDateKey();
 
     const total = milestones.length;
     const passed = milestones.filter((m) => m.date <= todayStr).length;
@@ -8046,7 +8214,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         if (res) {
           readingLinkHtml = `
             <a
-              href="${escapeHtml(res.download_url)}"
+              href="${escapeHtml(safeHttpUrl(res.download_url) || '#')}"
               target="_blank"
               rel="noopener noreferrer"
               class="context-tag context-tag-accent ml-2 hover:underline text-[11px] font-bold"
@@ -8188,7 +8356,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         resources: state.resources,
         pacingCalendar: state.pacingCalendar,
       };
-      localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify(payload));
+      setStoredItem('localStorage', OFFLINE_CACHE_KEY, JSON.stringify(payload));
     } catch (e) {
       console.warn('Failed to save to offline continuity cache:', e);
     }
@@ -8196,13 +8364,24 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
   function loadFromOfflineCache() {
     try {
-      const raw = localStorage.getItem(OFFLINE_CACHE_KEY);
+      const raw = getStoredItem('localStorage', OFFLINE_CACHE_KEY);
       if (!raw) return false;
       const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.courses)) return false;
-      state.courses = parsed.courses || [];
-      state.assignments = parsed.assignments || [];
-      state.announcements = (parsed.announcements || []).map(ensureAnnouncementSummarized);
+      if (
+        !parsed ||
+        !Array.isArray(parsed.courses) ||
+        !Array.isArray(parsed.assignments) ||
+        !Array.isArray(parsed.announcements) ||
+        (parsed.courseContexts != null &&
+          (typeof parsed.courseContexts !== 'object' || Array.isArray(parsed.courseContexts))) ||
+        (parsed.resources != null && !Array.isArray(parsed.resources))
+      ) {
+        console.warn('Offline continuity cache has an invalid data shape.');
+        return false;
+      }
+      state.courses = parsed.courses;
+      state.assignments = parsed.assignments;
+      state.announcements = parsed.announcements.map(ensureAnnouncementSummarized);
       state.courseContexts = parsed.courseContexts || {};
       state.resources = parsed.resources || [];
       state.pacingCalendar = parsed.pacingCalendar || null;
@@ -8254,39 +8433,144 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       if (token) {
         try {
           logSecurityEvent('GET', `${baseUrl}/api/v1/courses`, 'Direct Read-Only CORS');
-          const directRes = await fetch(
-            `${baseUrl}/api/v1/courses?enrollment_state=active&include[]=term&include[]=teachers&per_page=50`,
-            { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+          const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+          const origin = new URL(baseUrl).origin;
+          const fetchCanvasPages = async (initialUrl, pageSize = 100) => {
+            const items = [];
+            let nextUrl = initialUrl;
+            let pages = 0;
+            const seenUrls = new Set();
+            while (nextUrl) {
+              if (pages >= 100) {
+                throw new Error('Canvas pagination exceeded the 100-page limit.');
+              }
+              const requestUrl = new URL(nextUrl, baseUrl);
+              if (
+                requestUrl.origin !== origin ||
+                !requestUrl.pathname.startsWith('/api/v1/') ||
+                requestUrl.username ||
+                requestUrl.password
+              ) {
+                throw new Error('Canvas returned an invalid pagination URL.');
+              }
+              if (seenUrls.has(requestUrl.href)) {
+                throw new Error('Canvas pagination contains a repeated page.');
+              }
+              seenUrls.add(requestUrl.href);
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 15000);
+              let response;
+              let page;
+              try {
+                response = await fetch(requestUrl.href, {
+                  headers,
+                  redirect: 'error',
+                  signal: controller.signal,
+                });
+                if (!response.ok) {
+                  throw new Error(`Canvas request failed (HTTP ${response.status}).`);
+                }
+                page = await response.json();
+              } finally {
+                clearTimeout(timeout);
+              }
+              if (response.url) {
+                const finalUrl = new URL(response.url);
+                if (finalUrl.origin !== origin || !finalUrl.pathname.startsWith('/api/v1/')) {
+                  throw new Error('Canvas redirected the API request to an invalid URL.');
+                }
+              }
+              if (!Array.isArray(page)) throw new Error('Canvas returned an invalid list response.');
+              items.push(...page);
+              if (items.length > 10000) {
+                throw new Error('Canvas pagination exceeded the 10,000-item limit.');
+              }
+              pages += 1;
+
+              const linkHeader = response.headers.get('Link') || '';
+              const nextLink = linkHeader.match(/<([^>]+)>;\s*rel=["']?next["']?/i);
+              if (!nextLink) {
+                if (page.length >= pageSize) {
+                  throw new Error('Canvas pagination metadata is unavailable; results may be incomplete.');
+                }
+                nextUrl = null;
+                continue;
+              }
+              nextUrl = new URL(nextLink[1], requestUrl).href;
+            }
+            return items;
+          };
+
+          const directCourses = await fetchCanvasPages(
+            `${baseUrl}/api/v1/courses?enrollment_state=active&include[]=term&include[]=teachers&per_page=100`
           );
-          if (directRes.ok) {
-            const directCourses = await directRes.json();
-            state.courses = Array.isArray(directCourses)
-              ? directCourses.filter((c) => c && c.name && !c.access_restricted_by_date)
-              : [];
-            const assignLists = await Promise.all(
-              state.courses.slice(0, 10).map((c) =>
-                fetch(
-                  `${baseUrl}/api/v1/courses/${c.id}/assignments?per_page=100&order_by=due_at&include[]=submission`,
-                  { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+          const courses = directCourses.filter((c) => c && c.name && !c.access_restricted_by_date);
+          const assignLists = [];
+          for (let index = 0; index < courses.length; index += 4) {
+            const courseBatch = courses.slice(index, index + 4);
+            const batchAssignments = await Promise.all(
+              courseBatch.map((course) =>
+                fetchCanvasPages(
+                  `${baseUrl}/api/v1/courses/${encodeURIComponent(course.id)}/assignments?per_page=100&order_by=due_at&include[]=submission`
                 )
-                  .then((r) => r.json())
-                  .catch(() => [])
               )
             );
-            state.assignments = assignLists.flat().filter((x) => x && x.id);
-            els.syncStatusText.textContent = 'Live';
-            renderCourseSelectors();
-            renderAll();
-            return;
+            assignLists.push(...batchAssignments);
           }
-        } catch (_) {}
+          const upcomingEvents = await fetchCanvasPages(
+            `${baseUrl}/api/v1/users/self/upcoming_events?per_page=100`
+          );
+          const announcements = [];
+          for (let index = 0; index < courses.length; index += 10) {
+            const query = new URLSearchParams();
+            courses.slice(index, index + 10).forEach((course) => {
+              query.append('context_codes[]', `course_${course.id}`);
+            });
+            query.set('start_date', `${new Date().getFullYear() - 1}-01-01T00:00:00Z`);
+            query.set('end_date', `${new Date().getFullYear() + 2}-12-31T23:59:59Z`);
+            query.set('per_page', '100');
+            announcements.push(
+              ...(await fetchCanvasPages(`${baseUrl}/api/v1/announcements?${query.toString()}`))
+            );
+          }
+
+          const assignmentMap = new Map(
+            assignLists.flat().filter((assignment) => assignment && assignment.id)
+              .map((assignment) => [String(assignment.id), assignment])
+          );
+          upcomingEvents.forEach((event) => {
+            const assignment = event.assignment;
+            if (assignment && assignment.id && !assignmentMap.has(String(assignment.id))) {
+              assignmentMap.set(String(assignment.id), assignment);
+            }
+          });
+          state.courses = courses;
+          state.assignments = Array.from(assignmentMap.values());
+          state.announcements = announcements.map(ensureAnnouncementSummarized);
+          state.courseContexts = {};
+          if (els.syncStatusText) els.syncStatusText.textContent = 'Live';
+          saveToOfflineCache();
+          renderCourseSelectors();
+          renderAll();
+          return;
+        } catch (error) {
+          console.warn('Static Canvas sync failed:', error);
+        }
       }
 
-      if (els.syncStatusText) {
-        els.syncStatusText.textContent = 'Ready';
+      const restored = loadFromOfflineCache();
+      if (restored) {
+        if (els.syncStatusText) els.syncStatusText.textContent = 'Offline (Cached)';
+        if (els.offlineStatusBadge) els.offlineStatusBadge.classList.remove('hidden');
+        renderCourseSelectors();
+        renderAll();
+        showToast('Operating offline. Displaying cached dashboard data.', 3500);
+      } else {
+        if (els.syncStatusText) els.syncStatusText.textContent = 'Offline';
+        showToast('Canvas data could not be loaded and no valid offline cache is available.', 5000);
+        renderCourseSelectors();
+        renderAll();
       }
-      renderCourseSelectors();
-      renderAll();
       return;
     }
 
@@ -8297,12 +8581,15 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         apiFetch(`/api/v1/announcements${qs}`),
       ]);
 
-      if (coursesRes.status === 401 || coursesRes.status === 428) {
+      const authFailure = [coursesRes, eventsRes, announcementsRes].find(
+        (response) => response.status === 401 || response.status === 428
+      );
+      if (authFailure) {
         let errText = '';
         try {
-          errText = await coursesRes.text();
+          errText = await authFailure.text();
         } catch (_) {}
-        if (coursesRes.status === 401 && /token|expired|unauthori[sz]ed|invalid/i.test(errText)) {
+        if (authFailure.status === 401 && /token|expired|unauthori[sz]ed|invalid/i.test(errText)) {
           handleTokenRejected();
         }
         state.authenticated = false;
@@ -8310,36 +8597,78 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         return;
       }
 
-      const courses = await coursesRes.json();
-      state.courses = Array.isArray(courses) ? courses : [];
+      for (const [label, response] of [
+        ['Courses', coursesRes],
+        ['Upcoming events', eventsRes],
+        ['Announcements', announcementsRes],
+      ]) {
+        if (!response.ok) throw new Error(`${label} request failed (HTTP ${response.status}).`);
+      }
 
-      const upcomingEvents = await eventsRes.json();
-      const announcements = await announcementsRes.json();
-      state.announcements = Array.isArray(announcements)
-        ? announcements.map(ensureAnnouncementSummarized)
-        : [];
-
-      const [perCourseLists, perCourseContexts] = await Promise.all([
-        Promise.all(
-          state.courses.slice(0, 12).map((c) =>
-            apiFetch(`/api/v1/courses/${encodeURIComponent(c.id)}/assignments${qs}`)
-              .then((r) => r.json())
-              .catch(() => [])
-          )
-        ),
-        Promise.all(
-          state.courses.slice(0, 12).map((c) =>
-            apiFetch(`/api/v1/courses/${encodeURIComponent(c.id)}/context${qs}`)
-              .then((r) => r.json())
-              .catch(() => ({ course_id: c.id, modules: [], groups: [] }))
-          )
-        ),
+      const [courses, upcomingEvents, announcements] = await Promise.all([
+        coursesRes.json(),
+        eventsRes.json(),
+        announcementsRes.json(),
       ]);
+      if (
+        !Array.isArray(courses) ||
+        !Array.isArray(upcomingEvents) ||
+        !Array.isArray(announcements)
+      ) {
+        throw new Error('Canvas returned an invalid dashboard response.');
+      }
 
+      const perCourseLists = [];
+      const perCourseContexts = [];
+      for (let index = 0; index < courses.length; index += 4) {
+        const courseBatch = courses.slice(index, index + 4);
+        const [assignmentBatch, contextBatch] = await Promise.all([
+          Promise.all(
+            courseBatch.map(async (course) => {
+              const response = await apiFetch(
+                `/api/v1/courses/${encodeURIComponent(course.id)}/assignments${qs}`
+              );
+              if (!response.ok) {
+                throw new Error(
+                  `Assignments for course ${course.id} failed (HTTP ${response.status}).`
+                );
+              }
+              const assignments = await response.json();
+              if (!Array.isArray(assignments)) {
+                throw new Error(`Assignments for course ${course.id} have an invalid response.`);
+              }
+              return assignments;
+            })
+          ),
+          Promise.all(
+            courseBatch.map(async (course) => {
+              try {
+                const response = await apiFetch(
+                  `/api/v1/courses/${encodeURIComponent(course.id)}/context${qs}`
+                );
+                if (!response.ok) {
+                  throw new Error(`Context request failed (HTTP ${response.status}).`);
+                }
+                const context = await response.json();
+                if (!context || typeof context !== 'object' || Array.isArray(context)) {
+                  throw new Error('Context response has an invalid shape.');
+                }
+                return context;
+              } catch (error) {
+                console.warn(`Course context unavailable for ${course.id}:`, error.message);
+                return null;
+              }
+            })
+          ),
+        ]);
+        perCourseLists.push(...assignmentBatch);
+        perCourseContexts.push(...contextBatch);
+      }
+
+      const courseContexts = {};
       for (const ctxObj of perCourseContexts) {
         if (ctxObj && ctxObj.course_id) {
-          state.courseContexts[String(ctxObj.course_id)] = {
-            ...(state.courseContexts[String(ctxObj.course_id)] || {}),
+          courseContexts[String(ctxObj.course_id)] = {
             modules: Array.isArray(ctxObj.modules) ? ctxObj.modules : [],
             groups: Array.isArray(ctxObj.groups) ? ctxObj.groups : [],
           };
@@ -8356,38 +8685,62 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         }
       }
 
-      if (Array.isArray(upcomingEvents)) {
-        for (const ev of upcomingEvents) {
-          const a = ev.assignment || {
-            id: ev.id,
-            course_id: String(ev.context_code || '').replace(/^course_/, ''),
-            name: ev.title,
-            due_at: ev.start_at || ev.end_at,
-            html_url: ev.html_url,
-            description: ev.description || '',
-            is_submitted: false,
-          };
-          if (a && a.id && !assignmentMap.has(String(a.id))) {
-            assignmentMap.set(String(a.id), a);
-          }
+      for (const ev of upcomingEvents) {
+        const a = ev.assignment || {
+          id: ev.id,
+          course_id: String(ev.context_code || '').replace(/^course_/, ''),
+          name: ev.title,
+          due_at: ev.start_at || ev.end_at,
+          html_url: ev.html_url,
+          description: ev.description || '',
+          is_submitted: false,
+        };
+        if (a && a.id && !assignmentMap.has(String(a.id))) {
+          assignmentMap.set(String(a.id), a);
         }
       }
 
+      state.courses = courses;
+      state.courseContexts = courseContexts;
       state.assignments = Array.from(assignmentMap.values());
+      state.announcements = announcements.map(ensureAnnouncementSummarized);
 
       const cacheHeader = coursesRes.headers.get('X-Cache-Hit') === 'true';
       if (els.syncStatusText) {
         els.syncStatusText.textContent = cacheHeader ? 'Cached (5m)' : 'Live';
       }
 
-      try {
-        const [resList, pacCal] = await Promise.all([
-          apiFetch(`/api/v1/resources${qs}`).then((r) => r.json()).catch(() => []),
-          apiFetch(`/api/v1/pacing-calendar${qs}`).then((r) => r.json()).catch(() => null),
-        ]);
-        if (Array.isArray(resList) && resList.length > 0) state.resources = resList;
-        if (pacCal) state.pacingCalendar = pacCal;
-      } catch (_) {}
+      const [resourcesResult, pacingResult] = await Promise.allSettled([
+        apiFetch(`/api/v1/resources${qs}`).then(async (response) => {
+          if (!response.ok) throw new Error(`Resources failed (HTTP ${response.status}).`);
+          return response.json();
+        }),
+        apiFetch(`/api/v1/pacing-calendar${qs}`).then(async (response) => {
+          if (!response.ok) throw new Error(`Pacing calendar failed (HTTP ${response.status}).`);
+          return response.json();
+        }),
+      ]);
+      if (resourcesResult.status === 'fulfilled' && Array.isArray(resourcesResult.value)) {
+        state.resources = resourcesResult.value;
+      } else {
+        console.warn(
+          'Could not refresh course resources:',
+          resourcesResult.status === 'rejected' ? resourcesResult.reason : 'Invalid response shape'
+        );
+      }
+      if (
+        pacingResult.status === 'fulfilled' &&
+        pacingResult.value &&
+        typeof pacingResult.value === 'object' &&
+        !Array.isArray(pacingResult.value)
+      ) {
+        state.pacingCalendar = pacingResult.value;
+      } else {
+        console.warn(
+          'Could not refresh pacing calendar:',
+          pacingResult.status === 'rejected' ? pacingResult.reason : 'Invalid response shape'
+        );
+      }
 
       renderCourseSelectors();
       renderAll();
@@ -8406,6 +8759,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       if (els.syncStatusText) {
         els.syncStatusText.textContent = 'Offline';
       }
+      showToast('Dashboard data could not be refreshed and no valid offline cache is available.', 5000);
     }
   }
 
@@ -8553,7 +8907,10 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (els.submitAssignmentTitle) els.submitAssignmentTitle.textContent = assignment.name;
     if (els.submitDueBadge) els.submitDueBadge.textContent = `Due ${formatDateTime(assignment.effective_due_at || assignment.due_at)}`;
 
-    const canvasUrl = assignment.html_url || `${state.canvasBaseUrl}/courses/${cid}/assignments/${assignment.id}`;
+    const canvasUrl =
+      safeHttpUrl(
+        assignment.html_url || `${state.canvasBaseUrl}/courses/${cid}/assignments/${assignment.id}`
+      ) || '#';
     if (els.submissionCanvasDirectLink) els.submissionCanvasDirectLink.href = canvasUrl;
     if (els.submissionCanvasDirectLink2) els.submissionCanvasDirectLink2.href = canvasUrl;
     if (els.submissionCanvasDirectLink3) els.submissionCanvasDirectLink3.href = canvasUrl;
@@ -8594,14 +8951,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         throw new Error('Direct submission requires the local/cloud Node API. Please open Canvas directly or connect local backend.');
       }
 
-      const res = await fetch(`/api/v1/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}/submissions`, {
+      const res = await apiFetch(`/api/v1/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}/submissions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'X-Requested-With': 'CanvasHub',
-        },
-        body: JSON.stringify(payload),
+        body: payload,
       });
 
       const data = await res.json().catch(() => ({}));
@@ -8613,7 +8965,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       playSuccessChime();
       launchConfetti();
       state.checkedIds.add(String(assignmentId));
-      localStorage.setItem('atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
+      setStoredItem('localStorage', 'atelier_checked_ids', JSON.stringify(Array.from(state.checkedIds)));
 
       closeSubmissionModal();
       showToast('Successfully turned in to Canvas! Nice work.');
@@ -8658,26 +9010,26 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     state.briefingTab = tab;
     if (tab === 'saved') {
       renderSavedBriefingsDrawer();
-      if (els.briefingsViewAll) els.briefingsViewAll.classList.add('hidden');
-      if (els.briefingsViewSaved) els.briefingsViewSaved.classList.remove('hidden');
-      if (els.briefingsTabSavedBtn) {
-        els.briefingsTabSavedBtn.classList.add('studio-btn-primary');
-        els.briefingsTabSavedBtn.classList.remove('tone-surface');
+      if (els.briefingsAllView) els.briefingsAllView.classList.add('hidden');
+      if (els.briefingsSavedView) els.briefingsSavedView.classList.remove('hidden');
+      if (els.briefingTabSavedBtn) {
+        els.briefingTabSavedBtn.classList.add('studio-btn-primary');
+        els.briefingTabSavedBtn.classList.remove('tone-surface');
       }
-      if (els.briefingsTabAllBtn) {
-        els.briefingsTabAllBtn.classList.remove('studio-btn-primary');
-        els.briefingsTabAllBtn.classList.add('tone-surface');
+      if (els.briefingTabAllBtn) {
+        els.briefingTabAllBtn.classList.remove('studio-btn-primary');
+        els.briefingTabAllBtn.classList.add('tone-surface');
       }
     } else {
-      if (els.briefingsViewAll) els.briefingsViewAll.classList.remove('hidden');
-      if (els.briefingsViewSaved) els.briefingsViewSaved.classList.add('hidden');
-      if (els.briefingsTabAllBtn) {
-        els.briefingsTabAllBtn.classList.add('studio-btn-primary');
-        els.briefingsTabAllBtn.classList.remove('tone-surface');
+      if (els.briefingsAllView) els.briefingsAllView.classList.remove('hidden');
+      if (els.briefingsSavedView) els.briefingsSavedView.classList.add('hidden');
+      if (els.briefingTabAllBtn) {
+        els.briefingTabAllBtn.classList.add('studio-btn-primary');
+        els.briefingTabAllBtn.classList.remove('tone-surface');
       }
-      if (els.briefingsTabSavedBtn) {
-        els.briefingsTabSavedBtn.classList.remove('studio-btn-primary');
-        els.briefingsTabSavedBtn.classList.add('tone-surface');
+      if (els.briefingTabSavedBtn) {
+        els.briefingTabSavedBtn.classList.remove('studio-btn-primary');
+        els.briefingTabSavedBtn.classList.add('tone-surface');
       }
     }
     if (els.briefingsDrawerBackdrop) els.briefingsDrawerBackdrop.classList.remove('hidden');
@@ -8894,27 +9246,87 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     // Instant Panic Wipe Button
     if (els.panicWipeBtn) {
       els.panicWipeBtn.addEventListener('click', async () => {
-        sessionStorage.clear();
-        localStorage.removeItem('slated_google_vault_enc');
-        localStorage.removeItem('slated_google_profile_meta');
-        localStorage.removeItem('slated_device_key_v1');
-        localStorage.removeItem('atelier_custom_tasks');
-        localStorage.removeItem('atelier_checked_ids');
-        localStorage.removeItem('atelier_saved_briefings');
-        localStorage.removeItem(TOKEN_LIFECYCLE_KEY);
-        localStorage.removeItem('slated_schedule_config');
+        let localDataCleared = true;
+        const localKeys = [
+          'slated_google_vault_enc',
+          'slated_google_profile_meta',
+          'slated_device_key_v1',
+          'atelier_custom_tasks',
+          'atelier_checked_ids',
+          'slated_inclass_retakes',
+          'slated_packed_supplies',
+          'atelier_saved_briefings',
+          'slated_pinned_announcements',
+          TOKEN_LIFECYCLE_KEY,
+          'slated_schedule_config',
+          'slated_offline_cache_v2',
+          'slated_palette',
+          'slated_sound_muted',
+          'slated_compact_view',
+        ];
+        for (const key of localKeys) {
+          if (!removeStoredItem('localStorage', key)) localDataCleared = false;
+        }
+        if (!removeStoredItem('sessionStorage', 'atelier_active_token_session')) {
+          localDataCleared = false;
+        }
+
+        let remoteDataCleared = state.cloudStaticMode ? null : true;
+        if (!state.cloudStaticMode) {
+          remoteDataCleared = true;
+          for (const [url, options] of [
+            ['/api/user/credentials', { method: 'DELETE' }],
+            ['/api/auth/logout', { method: 'POST' }],
+          ]) {
+            try {
+              const response = await apiFetch(url, options);
+              if (!response.ok) remoteDataCleared = false;
+            } catch (error) {
+              remoteDataCleared = false;
+              console.warn(`Could not clear server data through ${url}:`, error);
+            }
+          }
+        }
+
         browserRamCreds = null;
         unlockedSnapshotData = null;
-        if (!state.cloudStaticMode) {
-          await apiFetch('/api/user/credentials', { method: 'DELETE' }).catch(() => {});
-          await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
-        }
         state.authenticated = false;
         state.courses = [];
         state.assignments = [];
         state.announcements = [];
+        state.courseContexts = {};
+        state.resources = [];
+        state.pacingCalendar = null;
+        state.customTasks = [];
+        state.checkedIds.clear();
+        state.inClassRetakeIds.clear();
+        state.packedSupplyIds.clear();
+        state.savedBriefingIds.clear();
+        state.pinnedAnnouncementIds.clear();
+        state.whatIfScores = {};
+        state.whatIfCustomTests = [];
+        state.targetGradeInputs = {};
+        if (state.studyLab) {
+          state.studyLab.typedInput = '';
+          state.studyLab.customTargetExpr =
+            '(x^2+1)^sin(x) * (cos(x)*ln(x^2+1) + (2*x*sin(x))/(x^2+1))';
+          state.studyLab.customOrigYExpr = '(x^2+1)^sin(x)';
+          state.studyLab.inputMode = 'type';
+          state.studyLab.showSteps = false;
+          state.studyLab.uploadedImageMeta = null;
+          state.studyLab.uploadedImageDataUrl = null;
+          state.studyLab.scratchpadStrokes = [];
+          state.studyLab.lastVerification = null;
+        }
         els.privacyModalBackdrop.classList.add('hidden');
-        showToast('All local, session, and vault data wiped.');
+        const wipeConfirmed = localDataCleared && remoteDataCleared !== false;
+        showToast(
+          wipeConfirmed
+            ? remoteDataCleared === null
+              ? 'Local data cleared.'
+              : 'Local data cleared; server credentials and session removed.'
+            : 'Some data could not be confirmed as cleared. Check your connection and try again.'
+        );
         await updateViewForAuthState();
       });
     }
@@ -8973,7 +9385,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         if (els.quickBaseUrlInput && url) {
           els.quickBaseUrlInput.value = url;
           if (els.helperCanvasSettingsLink) {
-            els.helperCanvasSettingsLink.href = `${url}/profile/settings`;
+            els.helperCanvasSettingsLink.href = safeHttpUrl(`${url}/profile/settings`) || '#';
           }
         }
       });
@@ -9053,8 +9465,8 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (els.drawerDownloadIcsBtn) els.drawerDownloadIcsBtn.addEventListener('click', () => downloadIcsCalendar());
 
     // Briefings Drawer Tabs (All vs Saved Vault)
-    if (els.briefingsTabAllBtn) els.briefingsTabAllBtn.addEventListener('click', () => openBriefingsDrawer('all'));
-    if (els.briefingsTabSavedBtn) els.briefingsTabSavedBtn.addEventListener('click', () => openBriefingsDrawer('saved'));
+    if (els.briefingTabAllBtn) els.briefingTabAllBtn.addEventListener('click', () => openBriefingsDrawer('all'));
+    if (els.briefingTabSavedBtn) els.briefingTabSavedBtn.addEventListener('click', () => openBriefingsDrawer('saved'));
 
     // Saved Briefings Drawer Controls
     if (els.openBriefingsDrawerBtn) {
@@ -9120,7 +9532,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           .replace(/^(https?):\/([^/])/i, '$1://$2')
           .replace(/\/+$/, '');
         if (clean.startsWith('https://')) {
-          els.helperCanvasSettingsLink.href = `${clean}/profile/settings`;
+          els.helperCanvasSettingsLink.href = safeHttpUrl(`${clean}/profile/settings`) || '#';
         }
       });
     }
@@ -9188,7 +9600,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
     if (els.logoutBtn) {
       els.logoutBtn.addEventListener('click', async () => {
-        sessionStorage.removeItem('atelier_active_token_session');
+        removeStoredItem('sessionStorage', 'atelier_active_token_session');
         browserRamCreds = null;
         unlockedSnapshotData = null;
         if (!state.cloudStaticMode) {
@@ -9295,9 +9707,9 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (els.deleteTokenBtn) {
       els.deleteTokenBtn.addEventListener('click', async () => {
         sessionStorage.removeItem('atelier_active_token_session');
-        localStorage.removeItem('slated_google_vault_enc');
-        localStorage.removeItem('slated_google_profile_meta');
-        localStorage.removeItem(TOKEN_LIFECYCLE_KEY);
+        removeStoredItem('localStorage', 'slated_google_vault_enc');
+        removeStoredItem('localStorage', 'slated_google_profile_meta');
+        removeStoredItem('localStorage', TOKEN_LIFECYCLE_KEY);
         browserRamCreds = null;
         unlockedSnapshotData = null;
         if (!state.cloudStaticMode) {
@@ -9331,7 +9743,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           name: title,
           due_at: dueIso,
         });
-        localStorage.setItem('atelier_custom_tasks', JSON.stringify(state.customTasks));
+        setStoredItem('localStorage', 'atelier_custom_tasks', JSON.stringify(state.customTasks));
         els.customTaskTitle.value = '';
         showToast(`Added "${title}" to your queue.`);
         renderAll();
@@ -9556,16 +9968,15 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
 
         try {
           // 1. Handshake with Canvas via server
-          const handshakeRes = await fetch(
+          const handshakeRes = await apiFetch(
             `/api/v1/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}/submissions/self/files`,
             {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'CanvasHub' },
-              body: JSON.stringify({
+              body: {
                 name: file.name,
                 size: file.size,
                 content_type: file.type || 'application/octet-stream',
-              }),
+              },
             }
           );
 
@@ -9576,13 +9987,21 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
           const handshakeData = await handshakeRes.json();
           const uploadUrl = handshakeData.upload_url;
           const uploadParams = handshakeData.upload_params || {};
+          const safeUploadUrl = safeHttpUrl(uploadUrl);
+          if (
+            !safeUploadUrl ||
+            !/^https:\/\//i.test(String(uploadUrl || '').trim()) ||
+            !safeUploadUrl.startsWith('https://')
+          ) {
+            throw new Error('Canvas returned an invalid file-upload URL.');
+          }
 
           // 2. Upload file directly to Canvas storage
           const formData = new FormData();
           Object.entries(uploadParams).forEach(([k, v]) => formData.append(k, v));
           formData.append('file', file);
 
-          const uploadRes = await fetch(uploadUrl, {
+          const uploadRes = await fetch(safeUploadUrl, {
             method: 'POST',
             body: formData,
           });
@@ -9613,10 +10032,12 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   }
 
   
-    // 24/7 Offline Continuity & Service Worker Registration (skip on static beacon.host bundle to avoid 404s)
-    if ('serviceWorker' in navigator && !window.location.hostname.endsWith('beacon.host')) {
+    // 24/7 Offline Continuity & Service Worker Registration
+    if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
+        navigator.serviceWorker.register('/sw.js').catch((error) => {
+          console.warn('Offline support could not be initialized:', error);
+        });
       });
     }
 
@@ -9625,7 +10046,10 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
         els.offlineStatusBadge.classList.toggle('hidden', navigator.onLine);
       }
     };
-    window.addEventListener('online', updateOnlineIndicator);
+    window.addEventListener('online', () => {
+      updateOnlineIndicator();
+      if (state.authenticated) loadDashboardData(true);
+    });
     window.addEventListener('offline', updateOnlineIndicator);
     updateOnlineIndicator();
 
@@ -9643,7 +10067,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (els.soundToggleBtn) {
       els.soundToggleBtn.addEventListener('click', () => {
         state.soundMuted = !state.soundMuted;
-        localStorage.setItem('slated_sound_muted', String(state.soundMuted));
+        setStoredItem('localStorage', 'slated_sound_muted', String(state.soundMuted));
         updateSoundToggleUI();
         showToast(state.soundMuted ? 'Audio muted for study hall / library.' : 'Audio chime enabled.');
       });
@@ -9654,7 +10078,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
       els.compactViewToggleBtn.textContent = state.compactView ? 'Comfortable' : 'Compact';
       els.compactViewToggleBtn.addEventListener('click', () => {
         state.compactView = !state.compactView;
-        localStorage.setItem('slated_compact_view', String(state.compactView));
+        setStoredItem('localStorage', 'slated_compact_view', String(state.compactView));
         els.compactViewToggleBtn.textContent = state.compactView ? 'Comfortable' : 'Compact';
         if (els.assignmentsList) {
           els.assignmentsList.classList.toggle('compact-queue', Boolean(state.compactView));
@@ -9714,7 +10138,7 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
     if (els.syncPacingToGcalBtn) {
       els.syncPacingToGcalBtn.addEventListener('click', () => {
         const cal = state.pacingCalendar || CONDER_PACING_CALENDAR;
-        const upcomingMilestones = (cal.milestones || []).filter((m) => m.date >= new Date().toISOString().slice(0, 10));
+        const upcomingMilestones = (cal.milestones || []).filter(        (m) => m.date >= localDateKey());
         if (upcomingMilestones.length === 0) {
           showToast('No upcoming milestones left in this month.');
           return;

@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
+const dns = require('dns');
+const net = require('net');
 const crypto = require('crypto');
+const { Agent } = require('undici');
+const { createStorage } = require('./storage');
 
 // ---------------------------------------------------------------------------
 // 1. Environment & Cryptographic Key Initialization
@@ -39,40 +42,99 @@ loadEnvFile(path.join(__dirname, '.env'));
 loadEnvFile(path.join(__dirname, 'canvas_api.env'));
 
 const PORT = Number(process.env.PORT) || 3000;
-const DATA_DIR = path.join(__dirname, '.data');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '.data'));
 const SECRET_FILE = path.join(DATA_DIR, 'master.key');
-const VAULT_FILE = path.join(DATA_DIR, 'vault.enc.json');
-const USERS_FILE = path.join(DATA_DIR, 'users.enc.json');
+const STORAGE = createStorage({ dataDir: DATA_DIR });
+const PERSISTENCE = STORAGE.mode;
+const CANVAS_HTTP_AGENT = new Agent({
+  connect: {
+    lookup(hostname, options, callback) {
+      const host = String(hostname).replace(/^\[|\]$/g, '');
+      const family = net.isIP(host);
+      if (family) {
+        if (!isPublicIp(host)) {
+          callback(new Error('Canvas URL resolves to a non-public address.'));
+          return;
+        }
+        if (options && options.all) callback(null, [{ address: host, family }]);
+        else callback(null, host, family);
+        return;
+      }
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-}
+      dns.lookup(
+        host,
+        {
+          family: options && options.family ? options.family : 0,
+          hints: options && options.hints ? options.hints : 0,
+          all: true,
+          verbatim: true,
+        },
+        (error, addresses) => {
+          if (error) {
+            callback(error);
+            return;
+          }
+          if (!addresses.length || addresses.some(({ address }) => !isPublicIp(address))) {
+            callback(new Error('Canvas hostname resolves to a non-public address.'));
+            return;
+          }
+          if (options && options.all) callback(null, addresses);
+          else callback(null, addresses[0].address, addresses[0].family);
+        }
+      );
+    },
+  },
+});
+let masterKeyCache = null;
 
 function getOrCreateMasterKey() {
+  const configuredKey = process.env.APP_ENCRYPTION_KEY;
+  if (configuredKey) {
+    if (!/^[a-f0-9]{64}$/i.test(configuredKey)) {
+      throw new Error('APP_ENCRYPTION_KEY must be exactly 64 hexadecimal characters.');
+    }
+    return Buffer.from(configuredKey, 'hex');
+  }
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 32) {
     return crypto.scryptSync(process.env.SESSION_SECRET, 'canvas-hub-master-salt-v1', 32);
   }
+  if (PERSISTENCE === 'postgres') {
+    throw new Error(
+      'SESSION_SECRET (at least 32 characters) or APP_ENCRYPTION_KEY (64 hex characters) is required for PostgreSQL storage.'
+    );
+  }
   if (fs.existsSync(SECRET_FILE)) {
     const hex = fs.readFileSync(SECRET_FILE, 'utf8').trim();
-    if (hex.length === 64) {
+    if (/^[a-f0-9]{64}$/i.test(hex)) {
       return Buffer.from(hex, 'hex');
     }
+    throw new Error('The local master key is invalid; refusing to replace it.');
   }
   const newKey = crypto.randomBytes(32);
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(SECRET_FILE, newKey.toString('hex'), { mode: 0o600 });
   return newKey;
 }
 
-const MASTER_KEY = getOrCreateMasterKey();
-const COOKIE_SIGN_KEY = crypto.createHmac('sha256', MASTER_KEY).update('cookie-sign-v1').digest();
-const VAULT_ENC_KEY = crypto.createHmac('sha256', MASTER_KEY).update('vault-aes-256-gcm-v1').digest();
+function getMasterKey() {
+  if (!masterKeyCache) masterKeyCache = getOrCreateMasterKey();
+  return masterKeyCache;
+}
+
+function getCookieSignKey() {
+  return crypto.createHmac('sha256', getMasterKey()).update('cookie-sign-v1').digest();
+}
+
+function getVaultEncryptionKey() {
+  return crypto.createHmac('sha256', getMasterKey()).update('vault-aes-256-gcm-v1').digest();
+}
 
 // ---------------------------------------------------------------------------
 // 2. AES-256-GCM Encryption & Per-User Credential Vault
 // ---------------------------------------------------------------------------
 function encryptPayload(obj) {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', VAULT_ENC_KEY, iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', getVaultEncryptionKey(), iv);
   const plaintext = Buffer.from(JSON.stringify(obj), 'utf8');
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
@@ -86,23 +148,10 @@ function decryptPayload(tokenStr) {
   const tag = Buffer.from(parts[1], 'base64');
   const ciphertext = Buffer.from(parts[2], 'base64');
   if (iv.length !== 12 || tag.length !== 16) throw new Error('Invalid IV or auth tag length');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', VAULT_ENC_KEY, iv);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', getVaultEncryptionKey(), iv);
   decipher.setAuthTag(tag);
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return JSON.parse(decrypted.toString('utf8'));
-}
-
-function readJsonStore(filePath) {
-  if (!fs.existsSync(filePath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (_) {
-    return {};
-  }
-}
-
-function writeJsonStore(filePath, obj) {
-  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), { mode: 0o600 });
 }
 
 function hashPassphrase(passphrase, saltHex) {
@@ -118,21 +167,24 @@ function verifyPassphrase(passphrase, saltHex, expectedHashHex) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function authenticateOrRegisterUser(email, passphrase, displayName) {
+async function authenticateOrRegisterUser(email, passphrase, displayName) {
   const cleanEmail = String(email || '').trim().toLowerCase();
   if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-    throw new Error('Please enter a valid email address.');
+    const error = new Error('Please enter a valid email address.');
+    error.status = 400;
+    throw error;
   }
   const secret = String(passphrase || '').trim();
   if (secret.length < 6) {
-    throw new Error('Passphrase must be at least 6 characters.');
+    const error = new Error('Passphrase must be at least 6 characters.');
+    error.status = 400;
+    throw error;
   }
 
   const userId = `acct:${crypto.createHash('sha256').update(cleanEmail).digest('hex').slice(0, 24)}`;
-  const store = readJsonStore(USERS_FILE);
-
-  if (store[userId]) {
-    const record = decryptPayload(store[userId]);
+  const existing = await STORAGE.get('users', userId);
+  if (existing) {
+    const record = decryptPayload(existing);
     if (!verifyPassphrase(secret, record.saltHex, record.hashHex)) {
       const err = new Error('Incorrect passphrase for this email.');
       err.status = 401;
@@ -155,8 +207,22 @@ function authenticateOrRegisterUser(email, passphrase, displayName) {
     hashHex,
     createdAt: new Date().toISOString(),
   };
-  store[userId] = encryptPayload(newRecord);
-  writeJsonStore(USERS_FILE, store);
+  const encryptedRecord = encryptPayload(newRecord);
+  const created = await STORAGE.setIfAbsent('users', userId, encryptedRecord);
+  if (!created) {
+    const record = decryptPayload(await STORAGE.get('users', userId));
+    if (!verifyPassphrase(secret, record.saltHex, record.hashHex)) {
+      const err = new Error('Incorrect passphrase for this email.');
+      err.status = 401;
+      throw err;
+    }
+    return {
+      sub: userId,
+      email: record.email,
+      name: displayName || record.name || cleanEmail.split('@')[0],
+      authProvider: 'encrypted-account',
+    };
+  }
 
   return {
     sub: userId,
@@ -168,7 +234,18 @@ function authenticateOrRegisterUser(email, passphrase, displayName) {
 
 const memoryVault = new Map();
 
-function setUserCredentials(userId, { canvasBaseUrl, canvasApiToken, persistMode = 'encrypted_disk', studentName = null }) {
+async function setUserCredentials(
+  userId,
+  { canvasBaseUrl, canvasApiToken, persistMode = 'encrypted_disk', studentName = null }
+) {
+  if (!['encrypted_disk', 'memory'].includes(persistMode)) {
+    throw new Error('Invalid credential persistence mode.');
+  }
+  if (PERSISTENCE === 'postgres' && persistMode === 'memory') {
+    const error = new Error('Memory-only credentials are unavailable with durable server storage.');
+    error.status = 400;
+    throw error;
+  }
   const encrypted = encryptPayload({
     canvasBaseUrl,
     canvasApiToken,
@@ -176,40 +253,32 @@ function setUserCredentials(userId, { canvasBaseUrl, canvasApiToken, persistMode
     updatedAt: new Date().toISOString(),
     persistMode,
   });
-  memoryVault.set(userId, encrypted);
-
-  const disk = readJsonStore(VAULT_FILE);
   if (persistMode === 'encrypted_disk') {
-    disk[userId] = encrypted;
-    writeJsonStore(VAULT_FILE, disk);
-  } else if (disk[userId]) {
-    delete disk[userId];
-    writeJsonStore(VAULT_FILE, disk);
+    await STORAGE.set('vault', userId, encrypted);
+    memoryVault.delete(userId);
+    return;
   }
+
+  await STORAGE.remove('vault', userId);
+  memoryVault.set(userId, encrypted);
 }
 
-function getUserCredentials(userId) {
+async function getUserCredentials(userId) {
   let enc = memoryVault.get(userId);
   if (!enc) {
-    const disk = readJsonStore(VAULT_FILE);
-    enc = disk[userId];
-    if (enc) memoryVault.set(userId, enc);
+    enc = await STORAGE.get('vault', userId);
   }
   if (!enc) return null;
   try {
     return decryptPayload(enc);
-  } catch (_) {
-    return null;
+  } catch (cause) {
+    throw new Error('Stored Canvas credentials are invalid or cannot be decrypted.', { cause });
   }
 }
 
-function deleteUserCredentials(userId) {
+async function deleteUserCredentials(userId) {
   memoryVault.delete(userId);
-  const disk = readJsonStore(VAULT_FILE);
-  if (disk[userId]) {
-    delete disk[userId];
-    writeJsonStore(VAULT_FILE, disk);
-  }
+  await STORAGE.remove('vault', userId);
 }
 
 function maskToken(token) {
@@ -222,8 +291,142 @@ function maskToken(token) {
 // ---------------------------------------------------------------------------
 // 3. URL & SSRF Validation
 // ---------------------------------------------------------------------------
+function isPublicIp(address) {
+  const family = net.isIP(address);
+  if (family === 4) {
+    const [a, b, c] = address.split('.').map(Number);
+    if (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+      (a === 192 && b === 88 && c === 99) ||
+      (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+      (a === 203 && b === 0 && c === 113)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  if (family !== 6) return false;
+  const groups = address.split('%')[0].toLowerCase().split(':').filter(Boolean);
+  const first = Number.parseInt(groups[0] || '0', 16);
+  const second = Number.parseInt(groups[1] || '0', 16);
+  if (first < 0x2000 || first > 0x3fff) return false;
+  if (
+    first === 0x2002 ||
+    (first === 0x2001 &&
+      (second <= 0x01ff || second === 0x0db8 || second === 0x0010 || second === 0x0020))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function fetchCanvas(url, options = {}) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch (cause) {
+    const error = new Error('Canvas request URL is invalid.', { cause });
+    error.status = 400;
+    throw error;
+  }
+  if (
+    parsedUrl.protocol !== 'https:' ||
+    parsedUrl.username ||
+    parsedUrl.password ||
+    (parsedUrl.port && parsedUrl.port !== '443')
+  ) {
+    const error = new Error('Canvas request must use a standard HTTPS URL.');
+    error.status = 400;
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(parsedUrl, {
+      ...options,
+      dispatcher: CANVAS_HTTP_AGENT,
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (response.status >= 300 && response.status < 400) {
+      const error = new Error('Canvas redirected the API request; verify the Canvas base URL.');
+      error.status = 502;
+      throw error;
+    }
+    const maxResponseBytes = 8 * 1024 * 1024;
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+      controller.abort();
+      const error = new Error('Canvas response exceeded the allowed size.');
+      error.status = 502;
+      throw error;
+    }
+    const chunks = [];
+    let responseBytes = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        responseBytes += value.byteLength;
+        if (responseBytes > maxResponseBytes) {
+          controller.abort();
+          const error = new Error('Canvas response exceeded the allowed size.');
+          error.status = 502;
+          throw error;
+        }
+        chunks.push(Buffer.from(value));
+      }
+    }
+    const text = Buffer.concat(chunks).toString('utf8');
+    return {
+      ok: response.ok,
+      status: response.status,
+      headers: response.headers,
+      async text() {
+        return text;
+      },
+      async json() {
+        if (!text) return null;
+        try {
+          return JSON.parse(text);
+        } catch (cause) {
+          const error = new Error('Canvas returned an invalid JSON response.', { cause });
+          error.status = 502;
+          throw error;
+        }
+      },
+    };
+  } catch (cause) {
+    if (Number.isInteger(cause.status)) throw cause;
+    const error = controller.signal.aborted
+      ? new Error('Canvas request timed out.')
+      : new Error('Could not reach Canvas.');
+    error.status = controller.signal.aborted ? 504 : 502;
+    error.cause = cause;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function normalizeAndValidateCanvasUrl(rawUrl) {
   const fallback = 'https://wcpss.instructure.com';
+  const invalidUrl = (message) => {
+    const error = new Error(message);
+    error.status = 400;
+    return error;
+  };
   let cleaned = String(rawUrl || fallback).trim();
   if (!cleaned) cleaned = fallback;
   cleaned = cleaned.replace(/^(https?):\/([^/])/i, '$1://$2');
@@ -235,20 +438,24 @@ function normalizeAndValidateCanvasUrl(rawUrl) {
   try {
     parsed = new URL(cleaned);
   } catch (_) {
-    throw new Error('Invalid Canvas school URL.');
+    throw invalidUrl('Invalid Canvas school URL.');
   }
 
   if (parsed.protocol !== 'https:') {
-    throw new Error('Canvas URL must use HTTPS (https://).');
+    throw invalidUrl('Canvas URL must use HTTPS (https://).');
   }
   if (parsed.username || parsed.password) {
-    throw new Error('URL must not contain embedded credentials.');
+    throw invalidUrl('URL must not contain embedded credentials.');
   }
   if (parsed.port && parsed.port !== '443') {
-    throw new Error('URL must use standard HTTPS port 443.');
+    throw invalidUrl('URL must use standard HTTPS port 443.');
   }
 
   const host = parsed.hostname.toLowerCase();
+  const literalHost = host.replace(/^\[|\]$/g, '');
+  if (net.isIP(literalHost) && !isPublicIp(literalHost)) {
+    throw invalidUrl('SSRF Protection: Private, loopback, or internal network hosts are blocked.');
+  }
   const forbiddenHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'];
   if (
     forbiddenHosts.includes(host) ||
@@ -261,7 +468,7 @@ function normalizeAndValidateCanvasUrl(rawUrl) {
     /^169\.254\./.test(host) ||
     /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
   ) {
-    throw new Error('SSRF Protection: Private, loopback, or internal network hosts are blocked.');
+    throw invalidUrl('SSRF Protection: Private, loopback, or internal network hosts are blocked.');
   }
 
   return `${parsed.protocol}//${parsed.hostname}`;
@@ -271,34 +478,49 @@ function normalizeAndValidateCanvasUrl(rawUrl) {
 // 4. Session Management
 // ---------------------------------------------------------------------------
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days convenience for students
-const sessions = new Map();
 
 function signSessionId(sessionId) {
-  const sig = crypto.createHmac('sha256', COOKIE_SIGN_KEY).update(sessionId).digest('base64url');
+  const sig = crypto.createHmac('sha256', getCookieSignKey()).update(sessionId).digest('base64url');
   return `${sessionId}.${sig}`;
 }
 
-function verifySignedSessionCookie(cookieVal) {
+function sessionCookieHeader(req, value, maxAge) {
+  const forwardedProto = String(req.headers?.['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const secure = process.env.NODE_ENV === 'production' || forwardedProto === 'https';
+  return `canvas_hub_session=${encodeURIComponent(
+    value
+  )}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax${secure ? '; Secure' : ''}`;
+}
+
+async function verifySignedSessionCookie(cookieVal) {
   if (!cookieVal || typeof cookieVal !== 'string') return null;
   const idx = cookieVal.indexOf('.');
   if (idx === -1) return null;
   const sessionId = cookieVal.slice(0, idx);
   const sig = cookieVal.slice(idx + 1);
-  const expectedSig = crypto.createHmac('sha256', COOKIE_SIGN_KEY).update(sessionId).digest('base64url');
+  const expectedSig = crypto.createHmac('sha256', getCookieSignKey()).update(sessionId).digest('base64url');
   const a = Buffer.from(sig);
   const b = Buffer.from(expectedSig);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
 
-  const session = sessions.get(sessionId);
+  const session = await STORAGE.get('sessions', sessionId);
   if (!session) return null;
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(sessionId);
+  if (
+    typeof session.userId !== 'string' ||
+    !session.userId ||
+    !Number.isFinite(Number(session.expiresAt)) ||
+    Date.now() >= Number(session.expiresAt)
+  ) {
+    await STORAGE.remove('sessions', sessionId);
     return null;
   }
   return { sessionId, ...session };
 }
 
-function createSession(userProfile) {
+async function createSession(userProfile) {
   const sessionId = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
   const sessionData = {
@@ -310,8 +532,15 @@ function createSession(userProfile) {
     createdAt: now,
     expiresAt: now + SESSION_TTL_MS,
   };
-  sessions.set(sessionId, sessionData);
-  return { sessionId, signedCookie: signSessionId(sessionId), sessionData };
+  const signedCookie = signSessionId(sessionId);
+  await STORAGE.set('sessions', sessionId, sessionData, {
+    expiresAt: new Date(sessionData.expiresAt),
+  });
+  return { sessionId, signedCookie, sessionData };
+}
+
+async function deleteSession(sessionId) {
+  if (sessionId) await STORAGE.remove('sessions', sessionId);
 }
 
 function parseCookies(req) {
@@ -322,7 +551,11 @@ function parseCookies(req) {
     if (idx === -1) continue;
     const k = pair.slice(0, idx).trim();
     const v = pair.slice(idx + 1).trim();
-    out[k] = decodeURIComponent(v);
+    try {
+      out[k] = decodeURIComponent(v);
+    } catch (error) {
+      console.warn('Ignoring malformed cookie value:', error.message);
+    }
   }
   return out;
 }
@@ -332,10 +565,30 @@ function parseCookies(req) {
 // ---------------------------------------------------------------------------
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const apiCache = new Map();
+const MAX_CACHE_ENTRIES = 200;
+const MAX_CACHE_BYTES = 32 * 1024 * 1024;
+const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
+let apiCacheBytes = 0;
+let lastCachePruneAt = 0;
+
+function deleteCached(cacheKey) {
+  const entry = apiCache.get(cacheKey);
+  if (!entry) return;
+  apiCache.delete(cacheKey);
+  apiCacheBytes -= entry.sizeBytes;
+}
+
+function pruneApiCache(now) {
+  if (now - lastCachePruneAt < 60_000 && apiCache.size < MAX_CACHE_ENTRIES) return;
+  lastCachePruneAt = now;
+  for (const [key, entry] of apiCache.entries()) {
+    if (now > entry.expiresAt) deleteCached(key);
+  }
+}
 
 function makeUserCacheKey(userId, canvasBaseUrl, canvasApiToken, endpoint) {
   const tokenFingerprint = crypto
-    .createHmac('sha256', MASTER_KEY)
+    .createHmac('sha256', getMasterKey())
     .update(String(canvasApiToken || ''))
     .digest('hex')
     .slice(0, 16);
@@ -346,28 +599,46 @@ function getCached(cacheKey) {
   const entry = apiCache.get(cacheKey);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
-    apiCache.delete(cacheKey);
+    deleteCached(cacheKey);
     return null;
   }
+  apiCache.delete(cacheKey);
+  apiCache.set(cacheKey, entry);
   return entry;
 }
 
 function setCached(cacheKey, userId, data, source = 'canvas') {
+  const now = Date.now();
+  const sizeBytes = Buffer.byteLength(JSON.stringify(data));
   const entry = {
     userId,
     data,
     source,
-    timestamp: Date.now(),
-    expiresAt: Date.now() + CACHE_TTL_MS,
+    timestamp: now,
+    expiresAt: now + CACHE_TTL_MS,
+    sizeBytes,
   };
-  apiCache.set(cacheKey, entry);
+  pruneApiCache(now);
+  deleteCached(cacheKey);
+  if (sizeBytes <= MAX_CACHE_ENTRY_BYTES) {
+    while (
+      apiCache.size >= MAX_CACHE_ENTRIES ||
+      apiCacheBytes + sizeBytes > MAX_CACHE_BYTES
+    ) {
+      const oldestKey = apiCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      deleteCached(oldestKey);
+    }
+    apiCache.set(cacheKey, entry);
+    apiCacheBytes += sizeBytes;
+  }
   return entry;
 }
 
 function clearUserCache(userId) {
   for (const [k, v] of apiCache.entries()) {
     if (v.userId === userId || k.startsWith(`${userId}|`)) {
-      apiCache.delete(k);
+      deleteCached(k);
     }
   }
 }
@@ -387,25 +658,80 @@ async function fetchUserCanvasApi(userId, creds, endpoint, forceRefresh = false)
     }
   }
 
-  const targetUrl = `${creds.canvasBaseUrl}${endpoint}`;
-  const response = await fetch(targetUrl, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${creds.canvasApiToken}`,
-      Accept: 'application/json',
-      'User-Agent': 'Atelier-Canvas/4.0',
-    },
-  });
+  const baseUrl = new URL(creds.canvasBaseUrl);
+  let nextUrl = new URL(endpoint, baseUrl);
+  const seenPages = new Set();
+  const items = [];
+  let pages = 0;
+  while (nextUrl) {
+    if (
+      nextUrl.origin !== baseUrl.origin ||
+      !nextUrl.pathname.startsWith('/api/v1/') ||
+      nextUrl.username ||
+      nextUrl.password
+    ) {
+      const error = new Error('Canvas returned an invalid pagination URL.');
+      error.status = 502;
+      throw error;
+    }
+    if (seenPages.has(nextUrl.href)) {
+      const error = new Error('Canvas pagination contains a repeated page.');
+      error.status = 502;
+      throw error;
+    }
+    seenPages.add(nextUrl.href);
+    pages += 1;
+    if (pages > 100) {
+      const error = new Error('Canvas pagination exceeded the 100-page limit.');
+      error.status = 502;
+      throw error;
+    }
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    const err = new Error(`Canvas API HTTP ${response.status}: ${errText.slice(0, 180)}`);
-    err.status = response.status;
-    throw err;
+    const response = await fetchCanvas(nextUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${creds.canvasApiToken}`,
+        Accept: 'application/json',
+        'User-Agent': 'Atelier-Canvas/4.0',
+      },
+    });
+    if (!response.ok) {
+      const error = new Error(`Canvas API request failed (HTTP ${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
+    const pageData = await response.json();
+    if (!Array.isArray(pageData)) {
+      const error = new Error('Canvas returned an invalid list response.');
+      error.status = 502;
+      throw error;
+    }
+
+    items.push(...pageData);
+    if (items.length > 10000) {
+      const error = new Error('Canvas pagination exceeded the 10,000-item limit.');
+      error.status = 502;
+      throw error;
+    }
+    const linkHeader = response.headers.get('link') || '';
+    const nextLink = linkHeader
+      .split(',')
+      .map((link) => link.match(/<([^>]+)>\s*;\s*rel=["']?next["']?/i))
+      .find(Boolean);
+    if (nextLink) {
+      try {
+        nextUrl = new URL(nextLink[1], nextUrl);
+      } catch (cause) {
+        const error = new Error('Canvas returned an invalid pagination URL.', { cause });
+        error.status = 502;
+        throw error;
+      }
+    } else {
+      nextUrl = null;
+    }
   }
 
-  const data = await response.json();
-  const saved = setCached(cacheKey, userId, data, 'canvas');
+  const saved = setCached(cacheKey, userId, items, 'canvas');
   return { ...saved, cached: false };
 }
 
@@ -413,11 +739,21 @@ async function fetchUserCanvasApi(userId, creds, endpoint, forceRefresh = false)
 // 6. Rate Limiting, Security Headers & Data Enrichers
 // ---------------------------------------------------------------------------
 const rateBuckets = new Map();
+const MAX_RATE_BUCKETS = 10000;
+let lastRateBucketPruneAt = 0;
 
 function checkRateLimit(ip, bucket = 'api', maxPerMin = 240) {
   const now = Date.now();
+  if (now - lastRateBucketPruneAt >= 60_000 || rateBuckets.size >= MAX_RATE_BUCKETS) {
+    lastRateBucketPruneAt = now;
+    for (const [key, entry] of rateBuckets.entries()) {
+      if (now > entry.resetAt) rateBuckets.delete(key);
+    }
+  }
   const key = `${ip}:${bucket}`;
-  const item = rateBuckets.get(key) || { count: 0, resetAt: now + 60_000 };
+  let item = rateBuckets.get(key);
+  if (!item && rateBuckets.size >= MAX_RATE_BUCKETS) return false;
+  item = item || { count: 0, resetAt: now + 60_000 };
   if (now > item.resetAt) {
     item.count = 0;
     item.resetAt = now + 60_000;
@@ -425,6 +761,20 @@ function checkRateLimit(ip, bucket = 'api', maxPerMin = 240) {
   item.count += 1;
   rateBuckets.set(key, item);
   return item.count <= maxPerMin;
+}
+
+function isAllowedLocalOrigin(originHeader) {
+  let origin;
+  try {
+    origin = new URL(originHeader);
+  } catch {
+    return false;
+  }
+  if (origin.protocol !== 'http:' || origin.username || origin.password) return false;
+  const hostname = origin.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === 'localhost' || hostname === '::1') return true;
+  const octets = hostname.split('.').map(Number);
+  return net.isIP(hostname) === 4 && octets[0] === 127;
 }
 
 function getSecurityHeaders(isApi = false, originHeader = '') {
@@ -436,7 +786,7 @@ function getSecurityHeaders(isApi = false, originHeader = '') {
     'Content-Security-Policy':
       "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com; frame-src https://accounts.google.com; connect-src 'self' http://localhost:3000 https://*.instructure.com https://accounts.google.com https://www.googleapis.com https://*.canvas-user-content.com; img-src 'self' data: https://*.googleusercontent.com https://*.instructure.com https://*.canvas-user-content.com;",
   };
-  if (originHeader && (originHeader.endsWith('.beacon.host') || originHeader.startsWith('http://localhost'))) {
+  if (originHeader && isAllowedLocalOrigin(originHeader)) {
     headers['Access-Control-Allow-Origin'] = originHeader;
     headers['Access-Control-Allow-Credentials'] = 'true';
     headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Requested-With, Authorization';
@@ -452,35 +802,55 @@ function getSecurityHeaders(isApi = false, originHeader = '') {
 function readJsonBody(req, maxBytes = 64 * 1024) {
   return new Promise((resolve, reject) => {
     if (req && req.body && typeof req.body === 'object') {
+      if (Buffer.byteLength(JSON.stringify(req.body)) > maxBytes) {
+        const error = new Error('Payload too large.');
+        error.status = 413;
+        return reject(error);
+      }
       return resolve(req.body);
     }
     if (req && typeof req.rawBody === 'string') {
+      if (Buffer.byteLength(req.rawBody) > maxBytes) {
+        const error = new Error('Payload too large.');
+        error.status = 413;
+        return reject(error);
+      }
       try {
         return resolve(req.rawBody ? JSON.parse(req.rawBody) : {});
-      } catch (_) {
-        return reject(new Error('Invalid JSON payload'));
+      } catch (cause) {
+        const error = new Error('Invalid JSON payload.', { cause });
+        error.status = 400;
+        return reject(error);
       }
     }
     if (!req || typeof req.on !== 'function') {
       return resolve({});
     }
     let total = 0;
+    let tooLarge = false;
     const chunks = [];
     req.on('data', (chunk) => {
+      if (tooLarge) return;
       total += chunk.length;
       if (total > maxBytes) {
-        reject(new Error('Payload too large'));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        const error = new Error('Payload too large.');
+        error.status = 413;
+        reject(error);
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (tooLarge) return;
       try {
         const raw = Buffer.concat(chunks).toString('utf8').trim();
         resolve(raw ? JSON.parse(raw) : {});
-      } catch (_) {
-        reject(new Error('Invalid JSON payload'));
+      } catch (cause) {
+        const error = new Error('Invalid JSON payload.', { cause });
+        error.status = 400;
+        reject(error);
       }
     });
     req.on('error', reject);
@@ -771,12 +1141,23 @@ async function handleApiRequest(reqOrUrl, res) {
   };
 
   if (pathname === '/api/health' && method === 'GET') {
+    try {
+      getMasterKey();
+      await STORAGE.check();
+    } catch (error) {
+      console.error('Health check could not verify persistent storage:', error.message);
+      return sendJson(error.status || 503, {
+        status: 'error',
+        error: 'Persistent storage is unavailable.',
+      });
+    }
     return sendJson(200, {
       status: 'ok',
       uptime: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
       service: 'Slated 24/7 Academic OS',
       version: '4.2.0',
+      persistence: PERSISTENCE,
     });
   }
 
@@ -797,10 +1178,12 @@ async function handleApiRequest(reqOrUrl, res) {
     }
   }
 
-  const cookies = parseCookies(req);
-  let currentSession = verifySignedSessionCookie(cookies.canvas_hub_session);
+  let cookies;
+  let currentSession = null;
 
   try {
+    cookies = parseCookies(req);
+    currentSession = await verifySignedSessionCookie(cookies.canvas_hub_session);
     // -----------------------------------------------------------------------
     // A. Session Status (with automatic localhost .env provisioning if requested)
     // -----------------------------------------------------------------------
@@ -816,24 +1199,24 @@ async function handleApiRequest(reqOrUrl, res) {
         const validatedUrl = normalizeAndValidateCanvasUrl(process.env.CANVAS_BASE_URL);
         const cleanedToken = String(process.env.CANVAS_API_TOKEN).trim();
         const userId = `token:${crypto
-          .createHmac('sha256', MASTER_KEY)
+          .createHmac('sha256', getMasterKey())
           .update(cleanedToken)
           .digest('hex')
           .slice(0, 24)}`;
-        setUserCredentials(userId, {
+        await setUserCredentials(userId, {
           canvasBaseUrl: validatedUrl,
           canvasApiToken: cleanedToken,
-          persistMode: 'memory',
+          persistMode: 'encrypted_disk',
           studentName: 'Student Workspace',
         });
-        const created = createSession({
+        const created = await createSession({
           sub: userId,
           email: 'local-workspace@canvas',
           name: 'Student Workspace',
           authProvider: 'local-env',
         });
         currentSession = { sessionId: created.sessionId, ...created.sessionData };
-        const creds = getUserCredentials(currentSession.userId);
+        const creds = await getUserCredentials(currentSession.userId);
         return sendJson(
           200,
           {
@@ -848,9 +1231,7 @@ async function handleApiRequest(reqOrUrl, res) {
             },
           },
           {
-            'Set-Cookie': `canvas_hub_session=${encodeURIComponent(
-              created.signedCookie
-            )}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_MS / 1000}; SameSite=Lax`,
+            'Set-Cookie': sessionCookieHeader(req, created.signedCookie, SESSION_TTL_MS / 1000),
           }
         );
       }
@@ -865,7 +1246,7 @@ async function handleApiRequest(reqOrUrl, res) {
         });
       }
 
-      const creds = getUserCredentials(currentSession.userId);
+      const creds = await getUserCredentials(currentSession.userId);
       return sendJson(200, {
         authenticated: true,
         hasLocalEnvFileToken,
@@ -893,7 +1274,16 @@ async function handleApiRequest(reqOrUrl, res) {
       const body = await readJsonBody(req);
       let rawUrl = body.canvasBaseUrl || 'https://wcpss.instructure.com';
       let rawToken = body.canvasApiToken || '';
-      const persistMode = body.persistMode === 'memory' ? 'memory' : 'encrypted_disk';
+      const requestedMode = body.persistMode ?? 'encrypted_disk';
+      if (!['encrypted_disk', 'memory'].includes(requestedMode)) {
+        return sendJson(400, { error: 'Invalid persistMode.' });
+      }
+      if (PERSISTENCE === 'postgres' && requestedMode === 'memory') {
+        return sendJson(400, {
+          error: 'Memory-only credentials are unavailable with durable server storage.',
+        });
+      }
+      const persistMode = requestedMode;
 
       if (body.envFileContent && typeof body.envFileContent === 'string') {
         const parsedEnv = parseEnvString(body.envFileContent);
@@ -928,7 +1318,7 @@ async function handleApiRequest(reqOrUrl, res) {
       let verifiedUser = null;
       if (body.verifyWithCanvas !== false) {
         try {
-          const verifyRes = await fetch(`${validatedUrl}/api/v1/users/self`, {
+          const verifyRes = await fetchCanvas(`${validatedUrl}/api/v1/users/self`, {
             method: 'GET',
             headers: {
               Authorization: `Bearer ${cleanedToken}`,
@@ -943,8 +1333,9 @@ async function handleApiRequest(reqOrUrl, res) {
           }
           verifiedUser = await verifyRes.json();
         } catch (err) {
-          return sendJson(400, {
-            error: `Could not connect to ${validatedUrl}: ${err.message}`,
+          const status = Number.isInteger(err.status) && err.status >= 500 ? err.status : 400;
+          return sendJson(status, {
+            error: status >= 500 ? err.message : `Could not connect to ${validatedUrl}.`,
           });
         }
       }
@@ -953,7 +1344,7 @@ async function handleApiRequest(reqOrUrl, res) {
       const tokenUserId = currentSession
         ? currentSession.userId
         : `token:${crypto
-            .createHmac('sha256', MASTER_KEY)
+            .createHmac('sha256', getMasterKey())
             .update(cleanedToken)
             .digest('hex')
             .slice(0, 24)}`;
@@ -963,14 +1354,14 @@ async function handleApiRequest(reqOrUrl, res) {
         verifiedUser?.primary_email || verifiedUser?.login_id || `${studentName.toLowerCase().replace(/\s+/g, '.')}@canvas`;
 
       clearUserCache(tokenUserId);
-      setUserCredentials(tokenUserId, {
+      await setUserCredentials(tokenUserId, {
         canvasBaseUrl: validatedUrl,
         canvasApiToken: cleanedToken,
         persistMode,
         studentName,
       });
 
-      const { signedCookie, sessionData } = createSession({
+      const { signedCookie, sessionData } = await createSession({
         sub: tokenUserId,
         email: studentEmail,
         name: studentName,
@@ -987,9 +1378,7 @@ async function handleApiRequest(reqOrUrl, res) {
           studentName,
         },
         {
-          'Set-Cookie': `canvas_hub_session=${encodeURIComponent(
-            signedCookie
-          )}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_MS / 1000}; SameSite=Lax`,
+          'Set-Cookie': sessionCookieHeader(req, signedCookie, SESSION_TTL_MS / 1000),
         }
       );
     }
@@ -999,18 +1388,16 @@ async function handleApiRequest(reqOrUrl, res) {
       const body = await readJsonBody(req);
       const email = String(body.email || '').trim().toLowerCase();
       const name = String(body.name || '').trim() || email.split('@')[0] || 'Student';
-      const passphrase = String(body.passphrase || body.password || 'local-default-pass');
+      const passphrase = String(body.passphrase || body.password || '');
 
-      const profile = authenticateOrRegisterUser(email, passphrase, name);
-      const { signedCookie, sessionData } = createSession(profile);
+      const profile = await authenticateOrRegisterUser(email, passphrase, name);
+      const { signedCookie, sessionData } = await createSession(profile);
 
       return sendJson(
         200,
         { ok: true, user: sessionData },
         {
-          'Set-Cookie': `canvas_hub_session=${encodeURIComponent(
-            signedCookie
-          )}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_MS / 1000}; SameSite=Lax`,
+          'Set-Cookie': sessionCookieHeader(req, signedCookie, SESSION_TTL_MS / 1000),
         }
       );
     }
@@ -1018,17 +1405,17 @@ async function handleApiRequest(reqOrUrl, res) {
     if (pathname === '/api/auth/logout' && method === 'POST') {
       if (currentSession) {
         clearUserCache(currentSession.userId);
-        const creds = getUserCredentials(currentSession.userId);
+        const creds = await getUserCredentials(currentSession.userId);
         if (creds && creds.persistMode === 'memory') {
           memoryVault.delete(currentSession.userId);
         }
-        sessions.delete(currentSession.sessionId);
+        await deleteSession(currentSession.sessionId);
       }
       return sendJson(
         200,
         { ok: true },
         {
-          'Set-Cookie': 'canvas_hub_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax',
+          'Set-Cookie': sessionCookieHeader(req, '', 0),
         }
       );
     }
@@ -1049,7 +1436,16 @@ async function handleApiRequest(reqOrUrl, res) {
       const body = await readJsonBody(req);
       let rawUrl = body.canvasBaseUrl || 'https://wcpss.instructure.com';
       let rawToken = body.canvasApiToken || '';
-      const persistMode = body.persistMode === 'memory' ? 'memory' : 'encrypted_disk';
+      const requestedMode = body.persistMode ?? 'encrypted_disk';
+      if (!['encrypted_disk', 'memory'].includes(requestedMode)) {
+        return sendJson(400, { error: 'Invalid persistMode.' });
+      }
+      if (PERSISTENCE === 'postgres' && requestedMode === 'memory') {
+        return sendJson(400, {
+          error: 'Memory-only credentials are unavailable with durable server storage.',
+        });
+      }
+      const persistMode = requestedMode;
 
       if (body.envFileContent && typeof body.envFileContent === 'string') {
         const parsedEnv = parseEnvString(body.envFileContent);
@@ -1074,7 +1470,7 @@ async function handleApiRequest(reqOrUrl, res) {
       let verifiedUser = null;
       if (body.verifyWithCanvas !== false) {
         try {
-          const verifyRes = await fetch(`${validatedUrl}/api/v1/users/self`, {
+          const verifyRes = await fetchCanvas(`${validatedUrl}/api/v1/users/self`, {
             method: 'GET',
             headers: {
               Authorization: `Bearer ${cleanedToken}`,
@@ -1089,14 +1485,15 @@ async function handleApiRequest(reqOrUrl, res) {
           }
           verifiedUser = await verifyRes.json();
         } catch (err) {
-          return sendJson(400, {
-            error: `Could not reach ${validatedUrl}: ${err.message}`,
+          const status = Number.isInteger(err.status) && err.status >= 500 ? err.status : 400;
+          return sendJson(status, {
+            error: status >= 500 ? err.message : `Could not reach ${validatedUrl}.`,
           });
         }
       }
 
       clearUserCache(userId);
-      setUserCredentials(userId, {
+      await setUserCredentials(userId, {
         canvasBaseUrl: validatedUrl,
         canvasApiToken: cleanedToken,
         persistMode,
@@ -1114,7 +1511,7 @@ async function handleApiRequest(reqOrUrl, res) {
 
     if (pathname === '/api/user/credentials' && method === 'DELETE') {
       clearUserCache(userId);
-      deleteUserCredentials(userId);
+      await deleteUserCredentials(userId);
       return sendJson(200, {
         ok: true,
         message: 'Your token and cached data have been wiped.',
@@ -1124,7 +1521,7 @@ async function handleApiRequest(reqOrUrl, res) {
     // -----------------------------------------------------------------------
     // D. Authenticated Per-User Canvas Proxy Endpoints
     // -----------------------------------------------------------------------
-    const creds = getUserCredentials(userId);
+    const creds = await getUserCredentials(userId);
 
     if (pathname === '/api/config') {
       return sendJson(200, {
@@ -1194,7 +1591,7 @@ async function handleApiRequest(reqOrUrl, res) {
 
       const [result, groupsRes] = await Promise.all([
         fetchUserCanvasApi(userId, creds, assignEndpoint, forceRefresh),
-        fetchUserCanvasApi(userId, creds, groupsEndpoint, forceRefresh).catch(() => ({ data: [] })),
+        fetchUserCanvasApi(userId, creds, groupsEndpoint, forceRefresh),
       ]);
 
       const groupMap = new Map();
@@ -1230,8 +1627,8 @@ async function handleApiRequest(reqOrUrl, res) {
       )}/assignment_groups?per_page=50`;
 
       const [modRes, grpRes] = await Promise.all([
-        fetchUserCanvasApi(userId, creds, modulesEndpoint, forceRefresh).catch(() => ({ data: [] })),
-        fetchUserCanvasApi(userId, creds, groupsEndpoint, forceRefresh).catch(() => ({ data: [] })),
+        fetchUserCanvasApi(userId, creds, modulesEndpoint, forceRefresh),
+        fetchUserCanvasApi(userId, creds, groupsEndpoint, forceRefresh),
       ]);
 
       const modules = Array.isArray(modRes.data)
@@ -1272,8 +1669,11 @@ async function handleApiRequest(reqOrUrl, res) {
         return sendJson(400, { error: 'Invalid course or assignment ID.' });
       }
 
-      const body = await readJsonBody(req).catch(() => ({}));
+      const body = await readJsonBody(req);
       const submissionType = body.submission_type || 'online_url';
+      if (!['online_url', 'online_text_entry', 'online_upload'].includes(submissionType)) {
+        return sendJson(400, { error: 'Unsupported submission type.' });
+      }
 
       const payload = {
         submission: {
@@ -1304,7 +1704,7 @@ async function handleApiRequest(reqOrUrl, res) {
         courseId
       )}/assignments/${encodeURIComponent(assignmentId)}/submissions`;
 
-      const canvasRes = await fetch(targetUrl, {
+      const canvasRes = await fetchCanvas(targetUrl, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${creds.canvasApiToken}`,
@@ -1316,9 +1716,8 @@ async function handleApiRequest(reqOrUrl, res) {
       });
 
       if (!canvasRes.ok) {
-        const errText = await canvasRes.text().catch(() => '');
         return sendJson(canvasRes.status, {
-          error: `Canvas error (HTTP ${canvasRes.status}): ${errText.slice(0, 180)}`,
+          error: `Canvas submission failed (HTTP ${canvasRes.status}).`,
         });
       }
 
@@ -1337,13 +1736,13 @@ async function handleApiRequest(reqOrUrl, res) {
     if (fileUploadMatch && method === 'POST') {
       const courseId = fileUploadMatch[1];
       const assignmentId = fileUploadMatch[2];
-      const body = await readJsonBody(req).catch(() => ({}));
+      const body = await readJsonBody(req);
 
       const targetUrl = `${creds.canvasBaseUrl}/api/v1/courses/${encodeURIComponent(
         courseId
       )}/assignments/${encodeURIComponent(assignmentId)}/submissions/self/files`;
 
-      const canvasRes = await fetch(targetUrl, {
+      const canvasRes = await fetchCanvas(targetUrl, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${creds.canvasApiToken}`,
@@ -1354,7 +1753,15 @@ async function handleApiRequest(reqOrUrl, res) {
         body: JSON.stringify(body),
       });
 
+      if (!canvasRes.ok) {
+        return sendJson(canvasRes.status, {
+          error: `Canvas file-upload handshake failed (HTTP ${canvasRes.status}).`,
+        });
+      }
       const data = await canvasRes.json();
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return sendJson(502, { error: 'Canvas returned an invalid file-upload response.' });
+      }
       return sendJson(canvasRes.status, data);
     }
 
@@ -1383,21 +1790,36 @@ async function handleApiRequest(reqOrUrl, res) {
         : [];
 
       let announcements = [];
+      let sourceSucceeded = false;
+      let sourceError = null;
       if (activeCourses.length > 0) {
-        const contextQuery = activeCourses
-          .slice(0, 15)
-          .map((c) => `context_codes[]=course_${encodeURIComponent(c.id)}`)
-          .join('&');
-        const annEndpoint = `/api/v1/announcements?${contextQuery}&start_date=2025-08-01&end_date=2027-07-01&per_page=100`;
+        const query = new URLSearchParams();
+        activeCourses.slice(0, 15).forEach((course) => {
+          query.append('context_codes[]', `course_${course.id}`);
+        });
+        const now = new Date();
+        const startDate = new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1));
+        const endDate = new Date(Date.UTC(now.getUTCFullYear() + 2, 11, 31, 23, 59, 59));
+        query.set('start_date', startDate.toISOString());
+        query.set('end_date', endDate.toISOString());
+        query.set('per_page', '100');
+        const annEndpoint = `/api/v1/announcements?${query.toString()}`;
         try {
           const annRes = await fetchUserCanvasApi(userId, creds, annEndpoint, forceRefresh);
-          if (Array.isArray(annRes.data)) {
-            announcements = annRes.data.map(summarizeAnnouncementServer);
+          if (!Array.isArray(annRes.data)) {
+            const error = new Error('Canvas returned an invalid announcements response.');
+            error.status = 502;
+            throw error;
           }
-        } catch (_) {}
+          announcements = annRes.data.map(summarizeAnnouncementServer);
+          sourceSucceeded = true;
+        } catch (error) {
+          sourceError = error;
+          console.warn('Canvas announcements query failed:', error.message);
+        }
       }
 
-      if (announcements.length === 0) {
+      if (!sourceSucceeded || announcements.length === 0) {
         try {
           const streamRes = await fetchUserCanvasApi(
             userId,
@@ -1405,28 +1827,39 @@ async function handleApiRequest(reqOrUrl, res) {
             '/api/v1/users/self/activity_stream?only_active_courses=true&per_page=40',
             forceRefresh
           );
-          if (Array.isArray(streamRes.data)) {
-            announcements = streamRes.data
-              .filter(
-                (item) =>
-                  item.type === 'Announcement' ||
-                  item.type === 'Message' ||
-                  item.type === 'DiscussionTopic'
-              )
-              .map((item) =>
-                summarizeAnnouncementServer({
-                  id: item.id,
-                  title: item.title || 'Course Update',
-                  message: item.message || '',
-                  posted_at: item.created_at || item.updated_at,
-                  context_code:
-                    item.context_type === 'Course' && item.course_id ? `course_${item.course_id}` : '',
-                  read_state: item.read_state === false ? 'unread' : item.read_state || 'unread',
-                  html_url: item.html_url || creds.canvasBaseUrl,
-                })
-              );
+          if (!Array.isArray(streamRes.data)) {
+            const error = new Error('Canvas returned an invalid activity-stream response.');
+            error.status = 502;
+            throw error;
           }
-        } catch (_) {}
+          announcements = streamRes.data
+            .filter(
+              (item) =>
+                item.type === 'Announcement' ||
+                item.type === 'Message' ||
+                item.type === 'DiscussionTopic'
+            )
+            .map((item) =>
+              summarizeAnnouncementServer({
+                id: item.id,
+                title: item.title || 'Course Update',
+                message: item.message || '',
+                posted_at: item.created_at || item.updated_at,
+                context_code:
+                  item.context_type === 'Course' && item.course_id ? `course_${item.course_id}` : '',
+                read_state: item.read_state === false ? 'unread' : item.read_state || 'unread',
+                html_url: item.html_url || creds.canvasBaseUrl,
+              })
+            );
+          sourceSucceeded = true;
+        } catch (error) {
+          sourceError = sourceError || error;
+          console.warn('Canvas activity-stream query failed:', error.message);
+        }
+      }
+
+      if (!sourceSucceeded) {
+        throw sourceError || new Error('Canvas announcements are unavailable.');
       }
 
       const saved = setCached(cacheKey, userId, announcements, 'canvas');
@@ -1512,27 +1945,14 @@ async function handleApiRequest(reqOrUrl, res) {
 
     return sendJson(404, { error: `Unknown API route: ${pathname}` });
   } catch (err) {
-    const status = err.status === 401 ? 401 : 500;
-    return sendJson(status, { error: err.message || 'Internal Server Error' });
+    const status =
+      Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
+    if (status >= 500) console.error(`API request failed (${status}):`, err.message);
+    return sendJson(status, {
+      error: status >= 500 ? 'Internal Server Error' : err.message || 'Request failed',
+    });
   }
 }
-
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.webmanifest': 'application/manifest+json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.pdf': 'application/pdf',
-  '.woff2': 'font/woff2',
-  '.txt': 'text/plain; charset=utf-8',
-};
-
 
 // ---------------------------------------------------------------------------
 // Curated Course Resources & Official Conder Pacing Calendars
@@ -1840,78 +2260,85 @@ function getCuratedCourseResources(canvasBaseUrl = 'https://wcpss.instructure.co
   ];
 }
 
-function startServer() {
-  let appServer;
-  try {
-    const express = require('express');
-    const app = express();
-    app.disable('x-powered-by');
+function createApp() {
+  const express = require('express');
+  const app = express();
+  app.disable('x-powered-by');
 
-    app.use((req, res, next) => {
-      const sec = getSecurityHeaders(req.path.startsWith('/api'), req.headers.origin || '');
-      for (const [k, v] of Object.entries(sec)) {
-        res.setHeader(k, v);
-      }
-      next();
-    });
+  app.use((req, res, next) => {
+    const sec = getSecurityHeaders(req.path.startsWith('/api'), req.headers.origin || '');
+    for (const [k, v] of Object.entries(sec)) {
+      res.setHeader(k, v);
+    }
+    next();
+  });
 
-    app.use('/api', (req, res) => {
-      handleApiRequest(req, res);
-    });
+  app.use('/api', (req, res, next) => {
+    Promise.resolve(handleApiRequest(req, res)).catch(next);
+  });
 
-    app.use(express.static(path.join(__dirname, 'public')));
+  app.use(express.static(path.join(__dirname, 'public')));
 
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'public', 'index.html'));
-    });
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
 
-    appServer = app.listen(PORT, () => {
-      console.log(`Slated running at http://localhost:${PORT}`);
-    });
-  } catch (_) {
-    appServer = http.createServer((req, res) => {
-      if (req.url.startsWith('/api/')) {
-        return handleApiRequest(req, res);
-      }
-      const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
-      let safePath = path.normalize(parsedUrl.pathname).replace(/^(\.\.[/\\])+/, '');
-      if (safePath === '/' || safePath === '\\') safePath = '/index.html';
-      const filePath = path.join(__dirname, 'public', safePath);
-
-      fs.readFile(filePath, (err, content) => {
-        const sec = getSecurityHeaders(false, req.headers.origin || '');
-        if (err) {
-          fs.readFile(path.join(__dirname, 'public', 'index.html'), (err2, fallbackContent) => {
-            if (err2) {
-              res.writeHead(404, sec);
-              return res.end('Not Found');
-            }
-            res.writeHead(200, { ...sec, 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(fallbackContent);
-          });
-          return;
-        }
-        const ext = path.extname(filePath).toLowerCase();
-        res.writeHead(200, {
-          ...sec,
-          'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-        });
-        res.end(content);
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    console.error('Unhandled request error:', err);
+    const status =
+      Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
+    if (req.path.startsWith('/api')) {
+      return res.status(status).json({
+        error: status >= 500 ? 'Internal Server Error' : err.message || 'Request failed',
       });
-    });
+    }
+    return res.status(status).send('Internal Server Error');
+  });
 
-    appServer.listen(PORT, () => {
-      console.log(`Slated running at http://localhost:${PORT}`);
-    });
-  }
-  return appServer;
+  return app;
+}
+
+const app = createApp();
+
+function startServer() {
+  return app.listen(PORT, () => {
+    console.log(`Slated running at http://localhost:${PORT}`);
+  });
 }
 
 if (require.main === module) {
-  startServer();
+  const server = startServer();
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.info(`Received ${signal}; closing the server.`);
+    const forceCloseTimer = setTimeout(() => {
+      console.error('Graceful shutdown timed out; closing active connections.');
+      server.closeAllConnections();
+    }, 10000);
+    forceCloseTimer.unref();
+    server.close(async (error) => {
+      clearTimeout(forceCloseTimer);
+      if (error) {
+        console.error('Could not close the HTTP server cleanly:', error.message);
+        process.exitCode = 1;
+      }
+      try {
+        await Promise.all([STORAGE.close(), CANVAS_HTTP_AGENT.close()]);
+      } catch (closeError) {
+        console.error('Could not close server resources cleanly:', closeError.message);
+        process.exitCode = 1;
+      }
+    });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
-module.exports = {
+module.exports = Object.assign(app, {
+  app,
   handleApiRequest,
   startServer,
   normalizeAndValidateCanvasUrl,
@@ -1923,4 +2350,4 @@ module.exports = {
   normalizeCanvasAssignment,
   summarizeAnnouncementServer,
   stripHtmlServer,
-};
+});
