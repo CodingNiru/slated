@@ -5,23 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Slated — Canvas, without the clutter.</title>
   <meta name="description" content="Slated is a student-first Canvas LMS productivity workspace that eliminates clutter, highlights urgent deadlines, calculates exact What-If grades, and syncs class schedules." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="preconnect" href="https://cdn.tailwindcss.com" />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    if (typeof tailwind !== 'undefined') {
-      tailwind.config = { darkMode: 'class' };
-    }
-  </script>
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#0d0d0c" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="stylesheet" href="/tailwind.generated.css" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <a class="skip-link" href="#mainLandmark">Skip to main content</a>
   <!-- Studio Header Bar -->
   <header class="studio-shell py-4 flex flex-wrap items-center justify-between gap-4" style="border-bottom: 1px solid var(--surface-2);">
     <div class="flex items-center gap-7">
@@ -121,7 +113,7 @@
   <!-- ===================================================================== -->
   <!-- MAIN LANDMARK: Slated Application View Shell                             -->
   <!-- ===================================================================== -->
-  <main id="mainLandmark" class="w-full">
+  <main id="mainLandmark" class="w-full" tabindex="-1">
   <!-- VIEW 1: STUDENT WELCOME & ONBOARDING (Google + 1-Step Token)            -->
   <!-- ===================================================================== -->
   <section id="authGateSection" class="studio-shell studio-section">

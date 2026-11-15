@@ -1,9 +1,10 @@
 // Slated Service Worker — 24/7 Offline Continuity & Caching
-const CACHE_NAME = 'slated-v4.2-cache';
+const CACHE_NAME = 'slated-v4.3-cache';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
+  '/tailwind.generated.css',
   '/app.js',
   '/manifest.json'
 ];

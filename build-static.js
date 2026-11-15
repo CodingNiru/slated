@@ -286,12 +286,14 @@ async function buildBundle() {
   fs.mkdirSync(distDir, { recursive: true });
 
   let html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+  const tailwindCss = fs.readFileSync(path.join(__dirname, 'public', 'tailwind.generated.css'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, 'public', 'styles.css'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, 'public', 'app.js'), 'utf8');
 
-  const minifiedCss = minifyCss(css);
+  const minifiedCss = `${tailwindCss}\n${minifyCss(css)}`;
   const cleanedJs = cleanJs(js);
 
+  html = html.replace('<link rel="stylesheet" href="/tailwind.generated.css" />', '');
   html = html.replace('<link rel="stylesheet" href="/styles.css" />', () => `<style>\n${minifiedCss}\n</style>`);
   html = html.replace(
     '<script src="/app.js"></script>',
@@ -308,6 +310,10 @@ async function buildBundle() {
 
   const outPath = path.join(distDir, 'index.html');
   fs.writeFileSync(outPath, html, 'utf8');
+  fs.copyFileSync(
+    path.join(__dirname, 'public', 'manifest.json'),
+    path.join(distDir, 'manifest.json')
+  );
   console.log(`Built verified zero-plaintext bundle at ${outPath} (${fs.statSync(outPath).size} bytes)`);
 }
 

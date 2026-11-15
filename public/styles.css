@@ -6,7 +6,7 @@ html[data-palette="paper"] {
   --surface-2: #DDD8CC;
   --ink: #121210;
   --ink-secondary: #48453F;
-  --accent: #D9381E;
+  --accent: #B82E17;
   --accent-ink: #FFFFFF;
   --urgent: #B82212;
   --urgent-bg: #F7DFDC;
@@ -14,8 +14,8 @@ html[data-palette="paper"] {
   --soon-bg: #F5E8D3;
   --calm: #145E37;
   --calm-bg: #DCECE3;
-  --font-display: 'Instrument Serif', Georgia, serif;
-  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: Georgia, serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-math: 'Cambria Math', 'STIX Two Math', 'KaTeX_Math', 'Cambria', Georgia, serif;
 }
 
@@ -28,13 +28,14 @@ html[data-palette="obsidian"] {
   --ink: #F3F1EC;
   --ink-secondary: #94918A;
   --accent: #E5482E;
-  --accent-ink: #FFFFFF;
+  --accent-ink: #11120F;
   --urgent: #F25A46;
   --urgent-bg: #2B1614;
   --soon: #EAA23B;
   --soon-bg: #292012;
   --calm: #3BB273;
   --calm-bg: #13261C;
+  --font-display: Georgia, serif;
 }
 
 /* 3. Midnight Slate & Cobalt ("midnight") */
@@ -45,13 +46,14 @@ html[data-palette="midnight"] {
   --ink: #EFF4FA;
   --ink-secondary: #8A9BB2;
   --accent: #3B82F6;
-  --accent-ink: #FFFFFF;
+  --accent-ink: #0A0F16;
   --urgent: #F87171;
   --urgent-bg: #2C1518;
   --soon: #FBBF24;
   --soon-bg: #2B2111;
   --calm: #34D399;
   --calm-bg: #102820;
+  --font-display: Georgia, serif;
 }
 
 /* 4. Forest & Matcha ("forest") */
@@ -69,6 +71,7 @@ html[data-palette="forest"] {
   --soon-bg: #282010;
   --calm: #38C982;
   --calm-bg: #11291D;
+  --font-display: Georgia, serif;
 }
 
 *, *::before, *::after {
@@ -182,6 +185,26 @@ html, body {
   outline-offset: 2px;
 }
 
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.65rem 1rem;
+  background: var(--ink);
+  color: var(--bg);
+  transform: translateY(-150%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 .studio-btn-primary {
   background-color: var(--accent);
   color: var(--accent-ink);
@@ -249,14 +272,14 @@ html, body {
 
 
 .status-chip-amber {
-  background-color: rgba(245, 158, 11, 0.15);
-  color: #d97706;
+  background-color: var(--soon-bg);
+  color: var(--soon);
 }
 .status-dot-amber {
-  background-color: #d97706;
+  background-color: var(--soon);
 }
 .urgency-strip-amber {
-  border-left: 3px solid #d97706;
+  border-left: 3px solid var(--soon);
 }
 
 .status-chip-green {
@@ -377,8 +400,8 @@ html, body {
 }
 
 .context-tag-accent {
-  background-color: var(--urgent-bg);
-  color: var(--accent);
+  background-color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* Architectural Studio Dropdowns & Collapsible Panels */
@@ -506,6 +529,15 @@ sub, .math-sub {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .reveal-item {
     opacity: 1 !important;
     transform: none !important;
