@@ -1,0 +1,28 @@
+name: Deploy to beacon.host
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build static site
+        run: node build-static.js
+
+      - name: Publish updates to pointed-edge-44.beacon.host
+        env:
+          BEACON_API_KEY: "chk_a22496ee8ed746ab82e517f87d3bd28fec8397fed471559fcb62eacae0553221"
+        run: |
+          curl -fsSL https://beacon.host | python3 - ./dist pointed-edge-44

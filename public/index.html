@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" data-palette="obsidian">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slated — Canvas, without the clutter.</title>
+  <meta name="description" content="Slated is a student-first Canvas LMS productivity workspace that eliminates clutter, highlights urgent deadlines, calculates exact What-If grades, and syncs class schedules." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.tailwindcss.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    if (typeof tailwind !== 'undefined') {
+      tailwind.config = { darkMode: 'class' };
+    }
+  </script>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0d0d0c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Studio Header Bar -->
+  <header class="studio-shell py-4 flex flex-wrap items-center justify-between gap-4" style="border-bottom: 1px solid var(--surface-2);">
+    <div class="flex items-center gap-7">
+      <a href="#top" class="flex items-baseline gap-2 no-underline" style="color: var(--ink);">
+        <span class="text-xl font-bold tracking-tight">Slated</span>
+        <span class="w-2 h-2 inline-block" style="background-color: var(--accent);"></span>
+      </a>
+      <nav id="sectionNavLinks" class="flex flex-wrap items-center gap-3 sm:gap-6 text-sm font-semibold" aria-label="Sections">
+        <a href="#deadlinesSection" class="hover:underline" style="color: var(--ink-secondary);">Queue</a>
+        <a href="#coursesSection" class="hover:underline" style="color: var(--ink-secondary);">Classes</a>
+        <button type="button" id="navResourcesBtn" class="hover:underline font-bold text-sm bg-transparent border-0 cursor-pointer p-0" style="color: var(--ink);">Resources</button>
+        <button type="button" id="navBriefingsBtn" class="hover:underline text-sm bg-transparent border-0 cursor-pointer p-0" style="color: var(--ink-secondary);">Briefings</button>
+        <button type="button" id="navStudyLabBtn" class="hover:underline text-sm bg-transparent border-0 cursor-pointer p-0" style="color: var(--accent);">Study Lab</button>
+        <button type="button" id="navCalendarBtn" class="hover:underline text-sm bg-transparent border-0 cursor-pointer p-0" style="color: var(--ink-secondary);">Calendar</button>
+      </nav>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <!-- 24/7 Offline Continuity Status Indicator -->
+      <span id="offlineStatusBadge" class="hidden offline-pill" title="Operating offline from local cache. Background sync active.">
+        <span class="offline-dot"></span>
+        <span>Offline Mode</span>
+      </span>
+
+      <!-- Sound Celebration Chime Mute/Unmute Toggle -->
+      <button id="soundToggleBtn" type="button" class="studio-btn text-xs py-1.5 px-2" title="Toggle task completion audio chime" aria-label="Toggle task celebration sound">
+        <span id="soundToggleIcon">🔊</span>
+      </button>
+      <!-- Live 25m Study Focus Timer Widget -->
+      <div id="focusTimerBar" class="hidden items-center gap-2 px-3 py-1.5 tone-surface-2 text-xs font-semibold tabular">
+        <span id="focusTimerLabel" class="max-w-[150px] truncate">Focus</span>
+        <span id="focusTimerClock" class="font-bold" style="color: var(--accent);">25:00</span>
+        <button id="focusTimerToggleBtn" type="button" class="underline ml-1">Pause</button>
+        <button id="focusTimerStopBtn" type="button" class="underline ml-1" style="color: var(--ink-secondary);">End</button>
+      </div>
+
+      <!-- Command Palette Trigger (Cmd+K / Ctrl+K) -->
+      <button id="openCmdPaletteBtn" type="button" class="hidden studio-btn text-xs" title="Quick Jump (Ctrl+K or ⌘K)">
+        <span>Jump</span>
+        <span class="kbd-tag" id="cmdPaletteKeyBadge">Ctrl+K</span>
+      </button>
+
+      <!-- Saved Teacher Briefings Vault -->
+      <button id="openBriefingsDrawerBtn" type="button" class="hidden studio-btn text-xs">
+        <span>Saved Briefings</span>
+        <span id="savedBriefingsCountBadge" class="px-1.5 py-0.5 text-[11px] font-bold tabular tone-surface-2">0</span>
+      </button>
+
+      <!-- 25m Pomodoro Timer -->
+      <button id="startQuickFocusBtn" type="button" class="hidden studio-btn text-xs">
+        25m Timer
+      </button>
+
+      <!-- Studio Palette Selector -->
+      <div class="flex items-center tone-surface px-2 py-1 gap-1" role="group" aria-label="Color palette">
+        <button type="button" data-set-palette="obsidian" class="palette-btn px-2 py-1 text-xs font-semibold" title="Obsidian &amp; Vermilion (Dark)">
+          Obsidian
+        </button>
+        <button type="button" data-set-palette="paper" class="palette-btn px-2 py-1 text-xs font-semibold" title="Newsprint &amp; Ink (Light)">
+          Paper
+        </button>
+        <button type="button" data-set-palette="midnight" class="palette-btn px-2 py-1 text-xs font-semibold" title="Midnight &amp; Cobalt">
+          Midnight
+        </button>
+        <button type="button" data-set-palette="forest" class="palette-btn px-2 py-1 text-xs font-semibold" title="Forest &amp; Matcha">
+          Forest
+        </button>
+      </div>
+
+      <!-- Privacy & Read-Only Proof Inspector -->
+      <button id="openPrivacyModalBtn" type="button" class="studio-btn text-xs" title="Inspect Read-Only &amp; AES-256 Encryption Proof">
+        <span class="status-dot status-dot-green"></span>
+        <span>Privacy Lock</span>
+      </button>
+
+      <button id="refreshBtn" type="button" class="hidden studio-btn text-xs">
+        Sync
+      </button>
+
+      <div id="userProfileBar" class="hidden items-center gap-2">
+        <button id="tokenExpiryChip" type="button" class="hidden studio-btn text-xs tabular" title="Canvas token lifetime" aria-label="Canvas token expiration status"></button>
+        <button id="openTokenModalBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+          <span id="userEmailBadge" class="max-w-[140px] truncate font-bold">Student</span>
+        </button>
+        <button id="logoutBtn" type="button" class="studio-btn text-xs">
+          Lock
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Toast Notification -->
+  <div id="toastBanner" role="status" aria-live="polite" class="fixed bottom-6 right-6 z-50 hidden max-w-md px-5 py-3.5 tone-surface-2 text-sm font-semibold" style="border-left: 4px solid var(--accent);">
+    <span id="toastMessage">Updated</span>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MAIN LANDMARK: Slated Application View Shell                             -->
+  <!-- ===================================================================== -->
+  <main id="mainLandmark" class="w-full">
+  <!-- VIEW 1: STUDENT WELCOME & ONBOARDING (Google + 1-Step Token)            -->
+  <!-- ===================================================================== -->
+  <section id="authGateSection" class="studio-shell studio-section">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-12 items-start">
+      <div class="lg:col-span-6 space-y-6 reveal-item is-visible">
+        <h1 class="display-title">
+          Canvas, without the clutter.
+        </h1>
+        <p class="statement-copy">
+          Slated turns messy Canvas pages into one clean daily gameplan—automatically recognizing in-class work, filtering out finished units, summarizing teacher announcements, and calculating What-If grades.
+        </p>
+
+        <div class="flex flex-wrap items-center gap-3 pt-1">
+          <button type="button" id="heroExploreDemoBtn" class="studio-btn studio-btn-primary py-3 px-6 text-sm font-bold flex items-center gap-2">
+            <span>Explore Live Interactive Demo</span>
+            <span>→</span>
+          </button>
+          <a href="#quickTokenInput" class="studio-btn tone-surface-2 py-3 px-5 text-sm font-semibold">
+            Connect Canvas Account
+          </a>
+        </div>
+
+        <!-- Factual Capability Comparison: Standard Canvas vs. Slated -->
+        <div class="p-6 tone-surface space-y-4 text-xs">
+          <div class="space-y-1">
+            <h2 class="text-sm font-bold" style="color: var(--ink);">Why Students Switch from Standard Canvas to Slated</h2>
+            <p class="secondary-copy">Factual comparison of day-to-day workflow differences for middle, high school, and university students.</p>
+          </div>
+          <div class="space-y-2.5">
+            <div class="p-3 tone-surface-2 space-y-1">
+              <div class="flex items-center justify-between font-bold">
+                <span style="color: var(--ink);">Active Daily Gameplan vs. Cluttered To-Do List</span>
+              </div>
+              <p class="secondary-copy leading-relaxed">
+                Standard Canvas leaves months-old paper worksheets, in-class posterboards, and completed quarters as permanent overdue alarms. Slated automatically recognizes in-class and paper submissions, moves old units to archive, and prioritizes actionable work due within 48 hours.
+              </p>
+            </div>
+            <div class="p-3 tone-surface-2 space-y-1">
+              <div class="flex items-center justify-between font-bold">
+                <span style="color: var(--ink);">Exact What-If Grade Simulation</span>
+                <span class="context-tag">Weighted Math</span>
+              </div>
+              <p class="secondary-copy leading-relaxed">
+                Standard Canvas only supports raw points without factoring in category weights, dropped low scores, or locked assignments. Slated runs full category-weighted formulas to answer: "What exact percentage do I need on the final exam to maintain an A?"
+              </p>
+            </div>
+            <div class="p-3 tone-surface-2 space-y-1">
+              <div class="flex items-center justify-between font-bold">
+                <span style="color: var(--ink);">Teacher Briefing &amp; Key Extraction</span>
+                <span class="context-tag">Direct Access</span>
+              </div>
+              <p class="secondary-copy leading-relaxed">
+                Teachers frequently bury quiz dates, homework problem numbers, and answer key links inside lengthy paragraphs. Slated extracts dates, files, and key bullet points into a clean, searchable updates feed.
+              </p>
+            </div>
+            <div class="p-3 tone-surface-2 space-y-1">
+              <div class="flex items-center justify-between font-bold">
+                <span style="color: var(--ink);">School Bell Schedule &amp; Calendar Feeds</span>
+                <span class="context-tag">A/B Day Aligned</span>
+              </div>
+              <p class="secondary-copy leading-relaxed">
+                Canvas calendar feeds ignore high school period bells and lunch waves. Slated maps deadlines to your exact class period times and generates clean .ics calendar feeds for Google Calendar, Apple Calendar, and Outlook.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- How to Grab Token -->
+        <div class="p-6 tone-surface space-y-2.5 text-sm">
+          <p class="font-bold text-base">How to generate your Canvas access token</p>
+          <ol class="list-decimal list-inside space-y-1.5 secondary-copy text-sm">
+            <li>Open <a id="helperCanvasSettingsLink" href="https://wcpss.instructure.com/profile/settings" target="_blank" rel="noopener noreferrer" class="underline font-semibold" style="color: var(--ink);">Canvas → Account → Settings</a></li>
+            <li>Scroll to <strong>Approved Integrations</strong> and click <strong>+ New Access Token</strong></li>
+            <li>Name it <strong>Slated</strong>, set <strong>Expires</strong> to 30 days out, copy the token, and paste it on the right</li>
+          </ol>
+          <p class="text-xs secondary-copy pt-1" style="border-top: 1px solid var(--surface-2); padding-top: 0.5rem;">
+            Canvas tokens last <strong style="color: var(--ink);">30 days</strong>. Slated reminds you 5 days before expiry and erases expired tokens from this device automatically. Tokens can be renewed anytime directly from your Canvas account settings.
+          </p>
+        </div>
+
+        <!-- Zero-Trust Privacy & Safety Guarantee Card -->
+        <div class="p-6 tone-surface space-y-3 text-sm" data-ui="privacy-guarantee">
+          <div class="flex items-center justify-between gap-2">
+            <p class="font-bold">100% Read-Only &amp; Zero-Knowledge Encrypted</p>
+            <button type="button" id="heroInspectSecurityBtn" class="text-xs font-bold underline" style="color: var(--accent);">
+              Verify Live Security Proof →
+            </button>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1 text-xs secondary-copy">
+            <div class="p-3 tone-surface-2">
+              <p class="font-bold" style="color: var(--ink);">Never Sees Password</p>
+              <p class="mt-0.5">Tokens never expose your school login, expire in 30 days, and can be revoked in Canvas anytime.</p>
+            </div>
+            <div class="p-3 tone-surface-2">
+              <p class="font-bold" style="color: var(--ink);">Strict Read-Only Lock</p>
+              <p class="mt-0.5">Slated only runs <code>GET</code> requests. It can never alter grades or submit work.</p>
+            </div>
+            <div class="p-3 tone-surface-2">
+              <p class="font-bold" style="color: var(--ink);">AES-256-GCM Vault</p>
+              <p class="mt-0.5">Encrypted locally with PBKDF2-SHA256 (100k rounds). Zero ads or data selling.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Instant Sign-In & Google Identity Vault -->
+      <div class="lg:col-span-6 p-8 tone-surface space-y-6 reveal-item is-visible" data-ui="connect-panel">
+        <div class="space-y-1">
+          <h2 class="section-heading">Open Your Workspace</h2>
+          <p class="secondary-copy text-sm">
+            Sign in with your saved Google account or paste your Canvas token to start.
+          </p>
+        </div>
+
+        <!-- Saved Google Account 1-Click Sign-In (Shown automatically if linked on this browser) -->
+        <div id="savedGoogleAccountBox" class="hidden p-4 tone-surface-2 space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <div id="savedGoogleAvatar" class="w-9 h-9 flex items-center justify-center font-bold text-sm" style="background-color: var(--accent); color: var(--accent-ink);">
+                G
+              </div>
+              <div class="min-w-0">
+                <p id="savedGoogleName" class="text-sm font-bold truncate">Student</p>
+                <p id="savedGoogleEmail" class="text-xs secondary-copy truncate">student@gmail.com</p>
+              </div>
+            </div>
+            <button id="continueSavedGoogleBtn" type="button" class="studio-btn studio-btn-primary text-xs py-2.5 px-4 shrink-0">
+              Continue as <span id="continueGoogleFirstName">Student</span> →
+            </button>
+          </div>
+        </div>
+
+        <!-- 100% Free Zero-Config Google Account Button -->
+        <div class="space-y-2">
+          <button id="googleSignInTriggerBtn" type="button" class="w-full studio-btn tone-surface-2 py-3 text-sm font-bold flex items-center justify-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M21.35 11.1h-9.17v2.73h6.51c-.33 1.81-1.5 3.34-3.2 4.37v3.62h5.18c3.03-2.79 4.78-6.9 4.78-11.8 0-.8-.08-1.57-.22-2.32z"/>
+              <path fill="currentColor" d="M12.18 22c4.32 0 7.95-1.43 10.6-3.88l-5.18-3.62c-1.43.96-3.26 1.53-5.42 1.53-4.17 0-7.7-2.81-8.96-6.6H-2.1v3.73C.54 18.4 5.93 22 12.18 22z"/>
+            </svg>
+            <span id="googleBtnLabel">Continue with Google Account</span>
+          </button>
+
+          <!-- Collapsible Google Email Identity Linker (Zero Client-ID Needed) -->
+          <div id="googleIdentityDrawer" class="hidden p-4 tone-surface-2 space-y-3">
+            <div class="flex items-center justify-between">
+              <p class="text-xs font-bold">Link Google Account for Instant Sign-In</p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                id="googleEmailInput"
+                type="email"
+                placeholder="yourname@gmail.com or school email"
+                class="studio-input text-xs py-2"
+              />
+              <input
+                id="googleDisplayNameInput"
+                type="text"
+                placeholder="Your Name (optional)"
+                class="studio-input text-xs py-2"
+              />
+            </div>
+            <p class="text-[11px] secondary-copy">
+              Binds your Google identity to your encrypted Canvas vault on this device so you can sign in with 1 click next time.
+            </p>
+          </div>
+        </div>
+
+        <button type="button" id="quickDemoBtn" class="w-full studio-btn tone-surface-2 py-3 text-xs font-bold flex items-center justify-center gap-2" style="border: 1px dashed var(--accent); color: var(--accent);">
+          <span>⚡ Explore Interactive Demo with Sample Classes</span>
+          <span>→</span>
+        </button>
+
+        <form id="quickConnectForm" class="space-y-4 pt-2" style="border-top: 1px solid var(--surface-2);">
+          <div>
+            <label for="quickTokenInput" class="block text-sm font-semibold mb-1.5">
+              Canvas Access Token
+            </label>
+            <input
+              id="quickTokenInput"
+              type="password"
+              required
+              autocomplete="off"
+              placeholder="Paste token (e.g. 5731~...)"
+              class="studio-input text-base"
+            />
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label for="quickBaseUrlInput" class="text-xs font-semibold" style="color: var(--ink-secondary);">
+                School Canvas District URL
+              </label>
+              <div class="flex items-center gap-2 text-xs">
+                <button type="button" data-preset-url="https://wcpss.instructure.com" class="underline secondary-copy hover:opacity-80">WCPSS</button>
+                <button type="button" data-preset-url="https://canvas.instructure.com" class="underline secondary-copy hover:opacity-80">Instructure</button>
+              </div>
+            </div>
+            <input
+              id="quickBaseUrlInput"
+              type="url"
+              value="https://wcpss.instructure.com"
+              required
+              class="studio-input text-sm"
+            />
+          </div>
+
+          <p id="quickConnectError" class="hidden text-sm font-semibold" style="color: var(--urgent);"></p>
+
+          <button type="submit" id="quickConnectSubmitBtn" class="w-full studio-btn studio-btn-primary py-3.5 text-base">
+            Launch Slated
+          </button>
+        </form>
+
+        <div class="pt-3 flex flex-wrap items-center justify-between gap-2 text-xs" style="border-top: 1px solid var(--surface-2);">
+          <label for="quickEnvFileInput" class="cursor-pointer underline font-semibold" style="color: var(--ink-secondary);">
+            Or import a .env file
+          </label>
+          <input id="quickEnvFileInput" type="file" accept=".env,text/plain" class="hidden" />
+
+          <button id="quickLocalEnvBtn" type="button" class="hidden underline font-semibold" style="color: var(--accent);">
+            Auto-connect detected local .env →
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 2: SLATED STUDENT WORKSPACE                                      -->
+  <!-- ===================================================================== -->
+  <div id="dashboardMain" class="hidden">
+    <!-- Live Demo Mode Banner (Visible in interactive demo mode) -->
+    <div id="demoModeBanner" class="hidden studio-shell pt-4">
+      <div class="p-4 tone-surface flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-semibold" style="border-left: 4px solid var(--accent); background: rgba(255, 79, 0, 0.08);">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <span class="context-tag context-tag-accent font-bold">Interactive Demo Mode</span>
+          <span class="truncate secondary-copy">Exploring with sample AP/Honors student schedule. All calculators, study tools, and briefing drawers are fully interactive!</span>
+        </div>
+        <button type="button" id="demoConnectRealBtn" class="studio-btn studio-btn-primary text-xs py-1.5 px-3 shrink-0">
+          Connect Real Canvas Token →
+        </button>
+      </div>
+    </div>
+
+    <!-- Hero Summary, Today's Gameplan & Metrics -->
+    <section id="top" class="studio-shell pt-9 pb-7">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-end">
+        <div class="lg:col-span-7 space-y-2 reveal-item">
+          <h1 id="heroHeadline" class="display-title">
+            Your week, slated.
+          </h1>
+          <p class="secondary-copy text-sm">
+            Connected to <a id="canvasInstanceLink" href="https://wcpss.instructure.com" target="_blank" rel="noopener noreferrer" class="underline font-semibold" style="color: var(--ink);">Canvas</a> • <span id="syncStatusText" class="tabular">Live</span> • <button type="button" id="openGcalSyncBtn" class="underline font-bold" style="color: var(--accent);">Sync Google Calendar</button>
+          </p>
+        </div>
+
+        <div class="lg:col-span-5 grid grid-cols-4 gap-2.5 reveal-item">
+          <div class="p-4 tone-surface">
+            <p class="secondary-copy text-xs">Due &lt; 48h</p>
+            <p id="statUrgentAssignments" class="mt-1 text-2xl font-bold tabular" style="color: var(--urgent);">0</p>
+          </div>
+          <div class="p-4 tone-surface">
+            <p class="secondary-copy text-xs">This Week</p>
+            <p id="statWeekAssignments" class="mt-1 text-2xl font-bold tabular" style="color: var(--soon);">0</p>
+          </div>
+          <div class="p-4 tone-surface">
+            <p class="secondary-copy text-xs">Completed</p>
+            <p id="statDoneAssignments" class="mt-1 text-2xl font-bold tabular" style="color: var(--calm);">0</p>
+          </div>
+          <div class="p-4 tone-surface">
+            <p class="secondary-copy text-xs">Needs Attention</p>
+            <p id="statActiveCourses" class="mt-1 text-2xl font-bold tabular" style="color: var(--urgent);">0</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Token Renewal Banner (shown ≤5 days before expiry) -->
+      <div id="tokenRenewBanner" class="hidden mt-6 p-4 tone-surface flex flex-col md:flex-row md:items-center justify-between gap-3 reveal-item" style="border-left: 4px solid var(--soon);"></div>
+
+      <!-- Today's Gameplan Strip (Synthesizes #1 Priority + Announced Quizzes) -->
+      <div id="gameplanStrip" class="mt-6 p-4 tone-surface-2 flex flex-col md:flex-row md:items-center justify-between gap-4 reveal-item" style="border-left: 4px solid var(--accent);">
+        <!-- Populated dynamically by app.js -->
+      </div>
+
+      <!-- School Bell Schedule, A/B Day & Room/Lunch Dropdown -->
+      <div id="bellScheduleStrip" class="mt-3 reveal-item" data-ui="bell-schedule-bar">
+        <!-- Populated dynamically by app.js -->
+      </div>
+
+      <!-- Search & Class Filter Bar -->
+      <div class="mt-3 p-3.5 tone-surface grid grid-cols-1 md:grid-cols-12 gap-3 items-center reveal-item" data-ui="filter-bar">
+        <div class="md:col-span-6">
+          <label for="searchInput" class="sr-only">Search assignments, announcements, or classes</label>
+          <input
+            id="searchInput"
+            type="search"
+            placeholder="Search assignments, briefings, units, or files... (Ctrl+K or /)"
+            class="studio-input text-sm"
+          />
+        </div>
+        <div class="md:col-span-4">
+          <label for="courseFilterSelect" class="sr-only">Filter by class</label>
+          <select id="courseFilterSelect" class="studio-select w-full text-sm">
+            <option value="all">All Classes</option>
+          </select>
+        </div>
+        <div class="md:col-span-2 flex items-center justify-end gap-2">
+          <button id="resetCourseFilterBtn" type="button" class="hidden studio-btn tone-surface-2 w-full text-xs">
+            Reset
+          </button>
+          <button
+            id="compactViewToggleBtn"
+            type="button"
+            class="studio-btn tone-surface-2 text-xs py-1.5 px-2.5"
+            title="Toggle compact list view"
+          >
+            Compact
+          </button>
+          <button
+            id="printGameplanBtn"
+            type="button"
+            class="studio-btn tone-surface-2 text-xs py-1.5 px-2.5"
+            title="Print weekly 1-page review sheet"
+          >
+            🖨️ Print
+          </button>
+          <button
+            id="downloadIcsBtn"
+            type="button"
+            class="studio-btn tone-surface-2 text-center text-xs py-1.5 px-2.5"
+            title="Download .ics calendar with all course deadlines and bell times"
+          >
+            .ics
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 1: Active Queue & Task Filter -->
+    <section id="deadlinesSection" class="studio-shell py-6">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <div class="lg:col-span-4 space-y-4 reveal-item">
+          <div class="space-y-1">
+            <h2 class="section-heading">Active Queue</h2>
+            <p class="secondary-copy text-xs">
+              Sorted by urgency and bell schedule.
+            </p>
+          </div>
+
+          <!-- View Switcher -->
+          <div class="space-y-1.5" role="group" aria-label="Assignment filter">
+            <button
+              type="button"
+              data-horizon="all"
+              class="horizon-btn w-full text-left px-4 py-2.5 font-semibold text-sm studio-btn studio-btn-primary justify-between"
+            >
+              <span>All Tasks (Grouped)</span>
+              <span id="countUpcomingBadge" class="tabular font-bold">0</span>
+            </button>
+            <button
+              type="button"
+              data-horizon="urgent"
+              class="horizon-btn w-full text-left px-4 py-2.5 font-semibold text-sm studio-btn justify-between"
+            >
+              <span class="flex items-center gap-2"><span class="status-dot status-dot-red"></span>Urgent (&lt; 48h)</span>
+              <span id="countUrgentBadge" class="tabular font-bold" style="color: var(--urgent);">0</span>
+            </button>
+            <button
+              type="button"
+              data-horizon="week"
+              class="horizon-btn w-full text-left px-4 py-2.5 font-semibold text-sm studio-btn justify-between"
+            >
+              <span class="flex items-center gap-2"><span class="status-dot status-dot-yellow"></span>This Week</span>
+              <span id="countWeekBadge" class="tabular font-bold" style="color: var(--soon);">0</span>
+            </button>
+            <button
+              type="button"
+              data-horizon="upcoming"
+              class="horizon-btn w-full text-left px-4 py-2.5 font-semibold text-sm studio-btn justify-between"
+            >
+              <span>Upcoming &amp; Open</span>
+              <span id="countTodoBadge" class="tabular">0</span>
+            </button>
+            <button
+              type="button"
+              data-horizon="completed"
+              class="horizon-btn w-full text-left px-4 py-2.5 font-semibold text-sm studio-btn justify-between"
+            >
+              <span>Submitted &amp; Graded</span>
+              <span id="countCompletedBadge" class="tabular">0</span>
+            </button>
+            <button
+              type="button"
+              data-horizon="archived"
+              class="horizon-btn w-full text-left px-4 py-2.5 font-semibold text-sm studio-btn justify-between"
+            >
+              <span>Past Units &amp; Archive</span>
+              <span id="countAllBadge" class="tabular">0</span>
+            </button>
+          </div>
+
+          <!-- Collapsible Quick-Add Reminder -->
+          <details class="studio-dropdown tone-surface" data-ui="custom-task-dropdown">
+            <summary class="px-4 py-3 flex items-center justify-between text-xs font-bold">
+              <span>+ Quick-Add Reminder or Test</span>
+              <span class="dropdown-chevron text-[10px]">▾</span>
+            </summary>
+            <form id="customTaskForm" class="px-4 pb-4 pt-2 space-y-2.5" style="border-top: 1px solid var(--surface-2);" data-ui="custom-task-form">
+              <input
+                id="customTaskTitle"
+                type="text"
+                required
+                placeholder="e.g. Finish Calc AB Log Diff #1-5"
+                class="studio-input text-sm py-2"
+              />
+              <div class="grid grid-cols-2 gap-2">
+                <select id="customTaskCourse" class="studio-select text-xs py-2">
+                  <option value="custom">General</option>
+                </select>
+                <input id="customTaskDue" type="date" required class="studio-input text-xs py-2" />
+              </div>
+              <button type="submit" class="w-full studio-btn studio-btn-primary text-xs py-2">
+                Add to Queue
+              </button>
+            </form>
+          </details>
+        </div>
+
+        <div class="lg:col-span-8 space-y-2.5 reveal-item" id="assignmentsList">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: Current Classes (with Period/A-B Day, Room, & Grade Lab) -->
+    <section id="coursesSection" class="tone-surface py-10" style="border-top: 1px solid var(--surface-2);">
+      <div class="studio-shell space-y-5">
+        <div class="flex flex-wrap items-end justify-between gap-4 reveal-item">
+          <div>
+            <h2 class="section-heading">Classes &amp; Grade Lab</h2>
+            <p class="secondary-copy text-xs">Click any class to filter your queue, or open <strong>Grade Lab</strong> for What-If scores, target grades, and study files.</p>
+          </div>
+        </div>
+
+        <div id="courseCardsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 reveal-item">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: Study Hub & Resources (Clean, Non-Intrusive Contextual Panel) -->
+    <section id="toolsHubSection" class="studio-shell py-8" style="border-top: 1px solid var(--surface-2);">
+      <div class="space-y-4">
+        <div class="flex flex-wrap items-end justify-between gap-4 reveal-item">
+          <div>
+            <h2 class="section-heading text-xl">Study Hub &amp; Resources</h2>
+            <p class="secondary-copy text-xs">Direct reference materials, study practice, teacher updates, and course pacing.</p>
+          </div>
+          <span class="text-xs secondary-copy">Press <span class="kbd-tag">Ctrl+K</span> to jump anywhere</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 reveal-item">
+          <!-- Card 1: Study Lab & Math Verifier -->
+          <button type="button" id="hubOpenStudyLabBtn" class="tool-hub-card text-left">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="context-tag context-tag-accent">Lab &amp; Verifier</span>
+                <span class="text-xs font-bold" style="color: var(--accent);">4 Decks</span>
+              </div>
+              <h3 class="text-sm font-bold">Study Lab &amp; Math Verifier</h3>
+              <p class="secondary-copy text-xs">Verify math steps, derivative forms, macro multipliers, and practice sets.</p>
+            </div>
+            <div class="pt-3 flex items-center justify-between text-xs font-semibold" style="border-top: 1px solid var(--surface-2);">
+              <span style="color: var(--accent);">Open Study Lab →</span>
+              <span class="text-[11px] secondary-copy">Scratchpad + LaTeX</span>
+            </div>
+          </button>
+
+          <!-- Card 2: Teacher Updates & Solution Keys -->
+          <button type="button" id="hubOpenBriefingsBtn" class="tool-hub-card text-left">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="context-tag">Teacher Updates</span>
+                <span id="hubBriefingCountBadge" class="text-xs font-bold tabular">26 Updates</span>
+              </div>
+              <h3 class="text-sm font-bold">Teacher Updates &amp; Solution Keys</h3>
+              <p class="secondary-copy text-xs">Distilled announcement points, quiz alerts, and downloadable solution keys.</p>
+            </div>
+            <div class="pt-3 flex items-center justify-between text-xs font-semibold" style="border-top: 1px solid var(--surface-2);">
+              <span style="color: var(--ink);">View Updates →</span>
+              <span class="text-[11px] secondary-copy">Search &amp; Filter</span>
+            </div>
+          </button>
+
+          <!-- Card 3: Digital Textbooks & Reference Files -->
+          <button type="button" id="hubOpenResourcesBtn" class="tool-hub-card text-left">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="context-tag">Resource Vault</span>
+                <span id="hubResourceCountBadge" class="text-xs font-bold tabular">19 Items</span>
+              </div>
+              <h3 class="text-sm font-bold">Digital Textbooks &amp; Reference Files</h3>
+              <p class="secondary-copy text-xs">Chapter PDFs, official syllabi, formula reference sheets, and reading schedules.</p>
+            </div>
+            <div class="pt-3 flex items-center justify-between text-xs font-semibold" style="border-top: 1px solid var(--surface-2);">
+              <span style="color: var(--ink);">Open Vault →</span>
+              <span class="text-[11px] secondary-copy">Instant PDF view</span>
+            </div>
+          </button>
+
+          <!-- Card 4: Course Pacing & Bell Schedule -->
+          <button type="button" id="hubOpenPacingBtn" class="tool-hub-card text-left">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="context-tag">Pacing &amp; Bells</span>
+                <span id="hubPacingMilestoneBadge" class="text-xs font-bold tabular">Unit 4 Active</span>
+              </div>
+              <h3 class="text-sm font-bold">Course Pacing &amp; Bell Schedule</h3>
+              <p class="secondary-copy text-xs">Official pacing milestones, A/B day block schedule, and exam target dates.</p>
+            </div>
+            <div class="pt-3 flex items-center justify-between text-xs font-semibold" style="border-top: 1px solid var(--surface-2);">
+              <span style="color: var(--ink);">Open Pacing →</span>
+              <span class="text-[11px] secondary-copy">Google Cal sync</span>
+            </div>
+          </button>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="context-tag">Pacing &amp; Bells</span>
+                <span id="hubPacingMilestoneBadge" class="text-xs font-bold tabular">Unit 4 Active</span>
+              </div>
+              <h3 class="text-sm font-bold">Pacing Sync &amp; Timeline</h3>
+              <p class="secondary-copy text-xs">Official pacing milestones, A/B day block schedule, and exam target dates.</p>
+            </div>
+            <div class="pt-3 flex items-center justify-between text-xs font-semibold" style="border-top: 1px solid var(--surface-2);">
+              <span style="color: var(--ink);">Open Pacing →</span>
+              <span class="text-[11px] secondary-copy">Google Cal sync</span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 1: COMMAND PALETTE (Cmd+K / Ctrl+K Spotlight for Canvas)        -->
+  <!-- ===================================================================== -->
+  <section id="cmdPaletteBackdrop" class="studio-modal-backdrop hidden" aria-label="Quick Command Palette">
+    <div class="w-full max-w-2xl tone-surface p-5 space-y-4" style="border: 1px solid var(--surface-2);">
+      <div class="flex items-center gap-3">
+        <input
+          id="cmdPaletteInput"
+          type="search"
+          autocomplete="off"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls="cmdPaletteResults"
+          placeholder="Search classes, jump to deadline, toggle timer, copy calendar feed... (↑ ↓ ↵)"
+          class="studio-input text-base"
+        />
+        <button id="closeCmdPaletteBtn" type="button" class="studio-btn tone-surface-2 text-xs shrink-0" title="Close (Escape)">
+          Esc
+        </button>
+      </div>
+      <div class="flex items-center justify-between text-[11px] secondary-copy px-1">
+        <span>Use <strong style="color: var(--ink);">↑ ↓</strong> to navigate, <strong style="color: var(--ink);">↵ Enter</strong> to select, <strong style="color: var(--ink);">Esc</strong> to close</span>
+        <span class="tabular font-semibold" id="cmdPaletteMatchCount"></span>
+      </div>
+      <div id="cmdPaletteResults" role="listbox" class="max-h-[380px] overflow-y-auto space-y-1.5">
+        <!-- Populated by app.js -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 2: PRIVACY & ZERO-KNOWLEDGE SECURITY PROOF INSPECTOR            -->
+  <!-- ===================================================================== -->
+  <section id="privacyModalBackdrop" class="studio-modal-backdrop hidden" aria-label="Security and Privacy Proof">
+    <div class="w-full max-w-2xl tone-surface p-7 space-y-5" style="border: 1px solid var(--surface-2);">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="section-heading">Security &amp; Privacy Proof</h2>
+          <p class="secondary-copy text-sm">
+            Verifiable technical proof of how Slated protects your Canvas account.
+          </p>
+        </div>
+        <button id="closePrivacyModalBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+          Close
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+        <div class="p-4 tone-surface-2 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="font-bold">HTTP Method Lock</span>
+            <span class="status-chip status-chip-green">GET Only</span>
+          </div>
+          <p class="secondary-copy">
+            Slated never sends <code>POST</code>, <code>PUT</code>, or <code>DELETE</code> mutations to Canvas. It is physically incapable of altering grades, submitting assignments, or messaging teachers.
+          </p>
+        </div>
+        <div class="p-4 tone-surface-2 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="font-bold">Vault Encryption</span>
+            <span class="status-chip status-chip-green">AES-256-GCM</span>
+          </div>
+          <p class="secondary-copy">
+            Key derived via <code>PBKDF2-SHA256</code> (100,000 iterations) + 96-bit IV + 128-bit authentication tag. Zero third-party trackers.
+          </p>
+        </div>
+      </div>
+
+      <div class="p-4 tone-surface-2 space-y-2 text-xs">
+        <div class="flex items-center justify-between">
+          <span class="font-bold">Live Session Read-Only Audit Log</span>
+          <span id="auditLogCountBadge" class="tabular secondary-copy">0 requests</span>
+        </div>
+        <div id="securityAuditLogBox" class="max-h-[150px] overflow-y-auto space-y-1 font-mono text-[11px] p-2.5" style="background-color: var(--bg);">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+
+      <div class="pt-2 flex flex-wrap items-center justify-between gap-3" style="border-top: 1px solid var(--surface-2);">
+        <button id="panicWipeBtn" type="button" class="studio-btn text-xs" style="background-color: var(--urgent); color: #fff;">
+          Instant Panic Wipe (Clear All Local &amp; Session Data)
+        </button>
+        <button id="donePrivacyModalBtn" type="button" class="studio-btn studio-btn-primary text-xs">
+          Verified
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 3: ACCOUNT, GOOGLE IDENTITY & TOKEN VAULT                       -->
+  <!-- ===================================================================== -->
+  <section id="tokenModalBackdrop" class="studio-modal-backdrop hidden">
+    <div class="w-full max-w-lg tone-surface p-7 space-y-5" data-ui="token-modal">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="section-heading">Account &amp; Vault</h2>
+          <p class="secondary-copy text-sm">Manage your linked Google account, Canvas token, or session lock.</p>
+        </div>
+        <button id="closeTokenModalBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+          Close
+        </button>
+      </div>
+
+      <div id="currentTokenStatusBox" class="hidden p-4 tone-surface-2 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-sm font-bold">
+              Active Token: <code id="maskedTokenLabel">••••••••</code>
+            </p>
+            <p id="currentBaseUrlLabel" class="secondary-copy text-xs"></p>
+          </div>
+          <button id="deleteTokenBtn" type="button" class="studio-btn text-xs" style="background-color: var(--urgent); color: #fff;">
+            Wipe Token
+          </button>
+        </div>
+        <div class="pt-3 space-y-2 text-xs" style="border-top: 1px solid var(--surface);">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="font-bold">Expires</span>
+            <span id="tokenExpiryLabel" class="tabular secondary-copy">—</span>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <label for="tokenExpiryDateInput" class="secondary-copy">Set the exact date shown in Canvas</label>
+            <input id="tokenExpiryDateInput" type="date" class="studio-input text-xs py-1 w-auto" />
+          </div>
+          <label class="flex items-center gap-2 secondary-copy cursor-pointer">
+            <input id="tokenAutoWipeToggle" type="checkbox" checked />
+            <span>Erase this token from the device the moment it expires</span>
+          </label>
+          <a id="renewTokenLink" href="https://wcpss.instructure.com/profile/settings" target="_blank" rel="noopener noreferrer" class="inline-block underline font-bold" style="color: var(--accent);">
+            Generate a new token in Canvas →
+          </a>
+        </div>
+      </div>
+
+      <form id="credentialsForm" class="space-y-4">
+        <div>
+          <label for="modalGoogleEmailInput" class="block text-xs font-semibold mb-1" style="color: var(--ink-secondary);">
+            Linked Google Account Email (for instant sign-in on this device)
+          </label>
+          <input
+            id="modalGoogleEmailInput"
+            type="email"
+            placeholder="yourname@gmail.com"
+            class="studio-input text-sm"
+          />
+        </div>
+
+        <div>
+          <label for="canvasApiTokenInput" class="block text-sm font-semibold mb-1">
+            Canvas Access Token
+          </label>
+          <input
+            id="canvasApiTokenInput"
+            type="password"
+            required
+            autocomplete="off"
+            placeholder="Paste new token (e.g. 5731~...)"
+            class="studio-input"
+          />
+        </div>
+
+        <div>
+          <label for="canvasBaseUrlInput" class="block text-sm font-semibold mb-1">
+            School Canvas URL
+          </label>
+          <input
+            id="canvasBaseUrlInput"
+            type="url"
+            value="https://wcpss.instructure.com"
+            required
+            class="studio-input"
+          />
+        </div>
+
+        <p id="tokenFormError" class="hidden text-sm font-semibold" style="color: var(--urgent);"></p>
+
+        <div class="flex items-center justify-between gap-3 pt-2">
+          <label for="envFileInput" class="cursor-pointer text-xs font-semibold underline" style="color: var(--ink-secondary);">
+            Import .env file
+          </label>
+          <input id="envFileInput" type="file" accept=".env,text/plain" class="hidden" />
+
+          <div class="flex items-center gap-2">
+            <button id="cancelTokenModalBtn" type="button" class="studio-btn tone-surface-2">
+              Cancel
+            </button>
+            <button id="saveTokenSubmitBtn" type="submit" class="studio-btn studio-btn-primary">
+              Save &amp; Sync
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 4: DIRECT CANVAS SUBMISSION (Turn in without opening Canvas)   -->
+  <!-- ===================================================================== -->
+  <section id="submissionModalBackdrop" class="studio-modal-backdrop hidden" aria-label="Submit Assignment directly to Canvas">
+    <div class="w-full max-w-lg tone-surface p-7 space-y-5" data-ui="submission-modal">
+      <div class="flex items-start justify-between gap-4">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="context-tag context-tag-accent" id="submitCourseBadge">Class</span>
+            <span class="text-xs font-bold tabular" id="submitPointsBadge">— pts</span>
+          </div>
+          <h2 class="text-lg font-bold leading-snug" id="submitAssignmentTitle">Assignment Title</h2>
+          <p class="secondary-copy text-xs" id="submitDueBadge">Due —</p>
+        </div>
+        <button id="closeSubmissionModalBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+          Close
+        </button>
+      </div>
+
+      <!-- Submission Format Tabs -->
+      <div class="flex items-center gap-2" role="tablist">
+        <button type="button" id="submitTabUrlBtn" class="studio-btn text-xs py-1.5 px-3 studio-btn-primary">
+          Google Doc / Link
+        </button>
+        <button type="button" id="submitTabFileBtn" class="studio-btn text-xs py-1.5 px-3 tone-surface">
+          File Upload
+        </button>
+        <button type="button" id="submitTabTextBtn" class="studio-btn text-xs py-1.5 px-3 tone-surface">
+          Text Entry
+        </button>
+      </div>
+
+      <!-- Form 1: Google Doc or URL Link -->
+      <form id="submissionUrlForm" class="space-y-3.5">
+        <div>
+          <label for="submissionUrlInput" class="block text-xs font-semibold mb-1">
+            Google Doc / Slides Link or Web URL
+          </label>
+          <input
+            id="submissionUrlInput"
+            type="url"
+            required
+            placeholder="https://docs.google.com/document/d/... or any share link"
+            class="studio-input text-sm"
+          />
+          <p class="text-[11px] secondary-copy mt-1.5">
+            Tip: Make sure your Google Doc share settings are set to <strong>"Anyone with the link can view"</strong> so your teacher can open it.
+          </p>
+        </div>
+
+        <p id="submissionErrorNotice" class="hidden text-xs font-semibold" style="color: var(--urgent);"></p>
+
+        <div class="flex items-center justify-between pt-2">
+          <a id="submissionCanvasDirectLink" href="#" target="_blank" rel="noopener noreferrer" class="text-xs underline secondary-copy">
+            Open in Canvas instead
+          </a>
+          <button type="submit" id="submissionSubmitBtn" class="studio-btn studio-btn-primary text-xs py-2 px-4">
+            Turn In to Canvas →
+          </button>
+        </div>
+      </form>
+
+      <!-- Form 2: File Upload (PDF, Word, Images) -->
+      <form id="submissionFileForm" class="hidden space-y-3.5">
+        <div class="p-6 tone-surface-2 text-center space-y-2" style="border: 1px dashed var(--ink-secondary);">
+          <p class="text-sm font-bold">Select File to Upload (.pdf, .docx, .png, etc.)</p>
+          <p class="text-xs secondary-copy">Files are uploaded directly to your school Canvas assignment submission.</p>
+          <input id="submissionFileInput" type="file" class="mt-2 text-xs" />
+        </div>
+
+        <p id="submissionFileErrorNotice" class="hidden text-xs font-semibold" style="color: var(--urgent);"></p>
+
+        <div class="flex items-center justify-between pt-2">
+          <a id="submissionCanvasDirectLink2" href="#" target="_blank" rel="noopener noreferrer" class="text-xs underline secondary-copy">
+            Open in Canvas instead
+          </a>
+          <button type="submit" id="submissionFileSubmitBtn" class="studio-btn studio-btn-primary text-xs py-2 px-4">
+            Upload &amp; Turn In →
+          </button>
+        </div>
+      </form>
+
+      <!-- Form 3: Written Text Entry -->
+      <form id="submissionTextForm" class="hidden space-y-3.5">
+        <div>
+          <label for="submissionTextInput" class="block text-xs font-semibold mb-1">
+            Written Response / Text Entry
+          </label>
+          <textarea
+            id="submissionTextInput"
+            rows="6"
+            required
+            placeholder="Type or paste your response here..."
+            class="studio-input text-xs"
+          ></textarea>
+        </div>
+
+        <p id="submissionTextErrorNotice" class="hidden text-xs font-semibold" style="color: var(--urgent);"></p>
+
+        <div class="flex items-center justify-between pt-2">
+          <a id="submissionCanvasDirectLink3" href="#" target="_blank" rel="noopener noreferrer" class="text-xs underline secondary-copy">
+            Open in Canvas instead
+          </a>
+          <button type="submit" id="submissionTextSubmitBtn" class="studio-btn studio-btn-primary text-xs py-2 px-4">
+            Turn In to Canvas →
+          </button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 5: GOOGLE CALENDAR & FEED SYNC -->
+  <!-- ===================================================================== -->
+  <section id="gcalSyncModalBackdrop" class="studio-modal-backdrop hidden" aria-label="Google Calendar Sync">
+    <div class="w-full max-w-lg tone-surface p-7 space-y-5" data-ui="gcal-modal">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="section-heading">Google Calendar Sync</h2>
+          <p class="secondary-copy text-sm">Add deadlines and period bell times directly to your personal calendar.</p>
+        </div>
+        <button id="closeGcalSyncModalBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+          Close
+        </button>
+      </div>
+
+      <div class="space-y-3">
+        <!-- Direct Google Calendar Web Sync -->
+        <div class="p-4 tone-surface-2 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-sm">Google Calendar Web Sync</span>
+            <span class="context-tag context-tag-accent">Recommended</span>
+          </div>
+          <p class="text-xs secondary-copy">
+            Opens Google Calendar in a new tab with your live Canvas feed pre-filled. Changes in Canvas automatically update in Google Calendar.
+          </p>
+          <button type="button" id="gcalWebSyncBtn" class="w-full studio-btn studio-btn-primary text-xs py-2.5">
+            Open in Google Calendar →
+          </button>
+        </div>
+
+        <!-- Download .ics File -->
+        <div class="p-4 tone-surface-2 space-y-2">
+          <p class="font-bold text-sm">Download .ics Calendar File</p>
+          <p class="text-xs secondary-copy">
+            Exports a verified <code>.ics</code> file containing all upcoming deadlines and bell times. Opens directly in Apple Calendar, Outlook, and Google Calendar on any device.
+          </p>
+          <button type="button" id="gcalDownloadIcsBtn" class="studio-btn tone-surface text-xs py-2 px-4">
+            Download slated-deadlines.ics
+          </button>
+        </div>
+
+        <!-- Copy iCal Feed Link -->
+        <div class="p-4 tone-surface-2 space-y-2">
+          <p class="font-bold text-sm">Copy iCal Feed URL</p>
+          <p class="text-xs secondary-copy">Use this URL to subscribe from any calendar app (iPhone, Android, Mac, or PC).</p>
+          <div class="flex items-center gap-2">
+            <input id="gcalFeedUrlInput" type="text" readonly class="studio-input text-xs py-1.5 flex-1 font-mono" />
+            <button type="button" id="gcalCopyFeedBtn" class="studio-btn studio-btn-primary text-xs py-1.5 px-3 shrink-0">
+              Copy
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- DRAWER 1: STUDY & SYMBOLIC ANSWER EQUIVALENCE VERIFIER LAB            -->
+  <!-- ===================================================================== -->
+  <aside id="studyLabDrawerBackdrop" class="studio-drawer-backdrop hidden" aria-label="Study &amp; Symbolic Answer Equivalence Lab">
+    <div class="studio-drawer-panel" style="max-width: 980px;">
+      <div class="p-6 flex items-start justify-between gap-4" style="border-bottom: 1px solid var(--surface-2);">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <h2 class="section-heading text-xl">Study &amp; Answer Verifier</h2>
+            <span class="context-tag context-tag-accent">Symbolic Math • Scratchpad • LaTeX</span>
+          </div>
+          <p class="secondary-copy text-xs">
+            Verify equivalent derivative forms, macroeconomic multipliers, or PBL ingredient origins against your class keys.
+          </p>
+        </div>
+        <button id="closeStudyLabDrawerBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+          Close
+        </button>
+      </div>
+      <div class="studio-drawer-body p-6 space-y-5">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div class="lg:col-span-4 space-y-3" id="studyDeckSidebar">
+            <!-- Populated by app.js -->
+          </div>
+          <div class="lg:col-span-8 p-5 tone-surface-2 space-y-4" id="studyVerifierWorkspace">
+            <!-- Populated by app.js -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================================================================== -->
+  <!-- DRAWER 2: TEACHER BRIEFINGS & ANNOUNCEMENTS CENTER                    -->
+  <!-- ===================================================================== -->
+  <aside id="briefingsDrawerBackdrop" class="studio-drawer-backdrop hidden" aria-label="Teacher Briefings &amp; Announcements Center">
+    <div class="studio-drawer-panel" style="max-width: 820px;">
+      <div class="p-6 space-y-4" style="border-bottom: 1px solid var(--surface-2);">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 class="section-heading text-xl">Teacher Briefings Center</h2>
+            <p class="secondary-copy text-xs">
+              Distilled executive points, quiz dates, and downloadable keys from teacher announcements.
+            </p>
+          </div>
+          <button id="closeBriefingsDrawerBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+            Close
+          </button>
+        </div>
+
+        <!-- Briefing Tabs: All Announcements vs Saved Briefings -->
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2" role="tablist">
+            <button type="button" id="briefingTabAllBtn" class="studio-btn studio-btn-primary text-xs py-1.5 px-3 font-semibold">
+              Teacher Updates &amp; Keys
+            </button>
+            <button type="button" id="briefingTabSavedBtn" class="studio-btn tone-surface-2 text-xs py-1.5 px-3 font-semibold">
+              <span>Saved Vault</span>
+              <span id="savedBriefingsDrawerBadge" class="tabular px-1.5 py-0.5 text-[10px] tone-surface">0</span>
+            </button>
+          </div>
+          <span id="annMatchCountBadge" class="text-xs secondary-copy tabular font-semibold">26 items</span>
+        </div>
+
+        <!-- Filter bar for All Briefings -->
+        <div id="briefingsFilterBar" class="flex flex-wrap items-center gap-2.5">
+          <input
+            id="annSearchInput"
+            type="search"
+            placeholder="Search briefings (e.g. quiz, ch 24, retake)..."
+            class="studio-input text-xs py-1.5 px-2.5 flex-1 min-w-[200px]"
+          />
+          <select id="annFilterSelect" class="studio-select text-xs py-1.5">
+            <option value="all">All Teachers</option>
+            <option value="conder">Conder (World &amp; Macro)</option>
+            <option value="potter">Potter (Calc &amp; CSA)</option>
+            <option value="quiz_deadline">Quizzes &amp; Deadlines</option>
+            <option value="files">Study Keys &amp; Files</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="studio-drawer-body p-6 space-y-4">
+        <!-- View A: All Teacher Announcements (paginated / virtualized) -->
+        <div id="briefingsAllView" class="space-y-4">
+          <div id="announcementsList" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Populated by app.js -->
+          </div>
+          <div id="annPaginationBar" class="pagination-bar">
+            <!-- Populated by app.js -->
+          </div>
+        </div>
+
+        <!-- View B: Saved Pinned Vault -->
+        <div id="briefingsSavedView" class="hidden space-y-4">
+          <div id="savedBriefingsList" class="space-y-4">
+            <!-- Populated by app.js -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================================================================== -->
+  <!-- DRAWER 3: RESOURCE VAULT & DIGITAL TEXTBOOKS                          -->
+  <!-- ===================================================================== -->
+  <aside id="resourcesDrawerBackdrop" class="studio-drawer-backdrop hidden" aria-label="Class Resources &amp; Digital Textbooks Vault">
+    <div class="studio-drawer-panel" style="max-width: 860px;">
+      <div class="p-6 space-y-4" style="border-bottom: 1px solid var(--surface-2);">
+        <div class="flex items-start justify-between gap-4">
+          <div class="space-y-0.5">
+            <div class="flex items-center gap-2">
+              <span class="context-tag context-tag-accent">Resource Vault</span>
+              <span class="text-xs font-bold secondary-copy" id="resourceCountBadge">19 items</span>
+            </div>
+            <h2 class="section-heading text-xl">Textbooks, Reading Calendars &amp; Study Keys</h2>
+            <p class="secondary-copy text-xs">
+              Direct access to chapter PDFs, official course syllabi, teacher solution keys, and formula reference sheets.
+            </p>
+          </div>
+          <button id="closeResourcesDrawerBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+            Close
+          </button>
+        </div>
+
+        <!-- Class Tabs and Real-Time Search -->
+        <div class="space-y-2.5">
+          <div class="flex flex-wrap items-center gap-2">
+            <select id="resourceCategorySelect" class="studio-select text-xs py-1.5">
+              <option value="all">All Resource Types</option>
+              <option value="textbooks">Digital Textbooks &amp; Chapters</option>
+              <option value="calendars">Reading &amp; Pacing Calendars</option>
+              <option value="keys">Practice Problem Keys &amp; Worksheets</option>
+              <option value="syllabus">Syllabi &amp; Policies</option>
+              <option value="reference">Formula Sheets &amp; Reference</option>
+            </select>
+            <input
+              id="resourceSearchInput"
+              type="search"
+              placeholder="Search textbooks, chapters, keys..."
+              class="studio-input text-xs py-1.5 px-3 flex-1 min-w-[180px]"
+            />
+          </div>
+
+          <div class="flex flex-wrap items-center gap-1.5" id="resourceClassTabs" role="tablist">
+            <!-- Populated dynamically by app.js -->
+            <button type="button" data-res-class="all" class="res-class-tab studio-btn studio-btn-primary text-xs py-1 px-2.5 font-bold">
+              All Classes
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="studio-drawer-body p-6 space-y-4">
+        <!-- Dynamic Resource Cards Grid -->
+        <div id="resourcesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-2">
+          <!-- Populated by app.js -->
+        </div>
+        <div id="resourcesPaginationBar" class="pagination-bar">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================================================================== -->
+  <!-- DRAWER 4: PACING & OFFICIAL SCHEDULE                                  -->
+  <!-- ===================================================================== -->
+  <aside id="pacingDrawerBackdrop" class="studio-drawer-backdrop hidden" aria-label="Official Unit Pacing &amp; Daily Reading Schedule">
+    <div class="studio-drawer-panel" style="max-width: 780px;">
+      <div class="p-6 space-y-4" style="border-bottom: 1px solid var(--surface-2);">
+        <div class="flex items-start justify-between gap-4">
+          <div class="space-y-0.5">
+            <div class="flex items-center gap-2">
+              <span class="context-tag" style="background: var(--ink); color: #fff;">Official Pacing Calendar</span>
+              <span class="text-xs font-bold secondary-copy">Unit 4: Transoceanic Interconnections</span>
+            </div>
+            <h2 class="section-heading text-xl">AP World November Pacing &amp; Daily Schedule</h2>
+            <p class="secondary-copy text-xs">
+              Synchronized directly with Mr. Conder's official November calendar. Daily chapter pages, A/B day quizzes, and test dates.
+            </p>
+          </div>
+          <button id="closePacingDrawerBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+            Close
+          </button>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <a
+            id="downloadOfficialPdfCalendarBtn"
+            href="https://wcpss.instructure.com/courses/1414245/files/120626470/download?verifier=e0b3aeb3-0bd3-4db2-8126-909d5758396c"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="studio-btn studio-btn-primary text-xs py-1.5 px-3 font-bold"
+            title="Download official PDF calendar published by Mr. Conder"
+          >
+            📄 Download Official PDF
+          </a>
+          <button
+            id="syncPacingToGcalBtn"
+            type="button"
+            class="studio-btn tone-surface text-xs py-1.5 px-3"
+            title="Add all November reading milestones and quizzes to personal Google Calendar"
+          >
+            + Sync Month to Google Cal
+          </button>
+        </div>
+
+        <!-- Pacing Progress Bar -->
+        <div class="p-3.5 tone-surface-2 space-y-1.5">
+          <div class="flex items-center justify-between text-xs font-semibold">
+            <span>Unit 4 Pacing Progress</span>
+            <span id="pacingProgressText" class="tabular">Target: Ch. 24 &amp; 25 Completed</span>
+          </div>
+          <div class="w-full bg-[var(--surface)] h-2 rounded-full overflow-hidden">
+            <div id="pacingProgressBar" class="h-full rounded-full transition-all duration-500" style="width: 42%; background-color: var(--accent);"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="studio-drawer-body p-6 space-y-4">
+        <!-- Milestones Timeline List -->
+        <div id="pacingTimelineList" class="pacing-timeline-container space-y-3 pt-2">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================================================================== -->
+  <!-- DRAWER 5: MONTHLY CALENDAR GRID & ICAL SYNC                           -->
+  <!-- ===================================================================== -->
+  <aside id="calendarDrawerBackdrop" class="studio-drawer-backdrop hidden" aria-label="Monthly Calendar &amp; Schedule">
+    <div class="studio-drawer-panel" style="max-width: 820px;">
+      <div class="p-6 space-y-4" style="border-bottom: 1px solid var(--surface-2);">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 class="section-heading text-xl">Monthly Schedule &amp; Deadlines</h2>
+            <p class="secondary-copy text-xs">Deadlines, announced quizzes, and A/B day bell schedule.</p>
+          </div>
+          <button id="closeCalendarDrawerBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+            Close
+          </button>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <button id="prevMonthBtn" type="button" class="studio-btn tone-surface-2 text-xs py-1.5 px-2.5">
+              Prev
+            </button>
+            <span id="calendarMonthLabel" class="px-3 py-1.5 text-xs font-bold tabular min-w-[130px] text-center tone-surface-2"></span>
+            <button id="nextMonthBtn" type="button" class="studio-btn tone-surface-2 text-xs py-1.5 px-2.5">
+              Next
+            </button>
+            <button id="todayMonthBtn" type="button" class="studio-btn tone-surface-2 text-xs py-1.5 px-2.5">
+              Today
+            </button>
+          </div>
+          <button id="drawerDownloadIcsBtn" type="button" class="studio-btn studio-btn-primary text-xs py-1.5 px-3">
+            Download .ics Calendar
+          </button>
+        </div>
+      </div>
+
+      <div class="studio-drawer-body p-6 space-y-4" data-ui="calendar-matrix">
+        <div class="grid grid-cols-7 gap-1.5 text-left text-xs font-bold pb-2" style="color: var(--ink-secondary);">
+          <div class="px-2">Sun</div>
+          <div class="px-2">Mon</div>
+          <div class="px-2">Tue</div>
+          <div class="px-2">Wed</div>
+          <div class="px-2">Thu</div>
+          <div class="px-2">Fri</div>
+          <div class="px-2">Sat</div>
+        </div>
+        <div id="calendarGrid" class="grid grid-cols-7 gap-1.5">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================================================================== -->
+  <!-- DRAWER 2: CLASS INSPECTOR, TARGET GRADE & WHAT-IF GRADE LAB           -->
+  <!-- ===================================================================== -->
+  <aside id="courseInspectorBackdrop" class="studio-drawer-backdrop hidden" aria-label="Class Inspector and Grade Lab">
+    <div class="studio-drawer-panel">
+      <div class="p-6 space-y-4" style="border-bottom: 1px solid var(--surface-2);">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p id="inspectorCoursePeriod" class="text-xs font-bold" style="color: var(--ink-secondary);"></p>
+            <h2 id="inspectorCourseTitle" class="section-heading">Class Brief</h2>
+            <p id="inspectorCourseMeta" class="secondary-copy text-sm"></p>
+          </div>
+          <button id="closeCourseInspectorBtn" type="button" class="studio-btn tone-surface-2 text-xs">
+            Close
+          </button>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2" role="tablist">
+          <button type="button" data-inspector-tab="overview" class="inspector-tab-btn studio-btn studio-btn-primary text-xs py-2 px-3">
+            Active Unit &amp; Modules
+          </button>
+          <button type="button" data-inspector-tab="gradelab" class="inspector-tab-btn studio-btn text-xs py-2 px-3">
+            What-If &amp; Target Grade Lab
+          </button>
+          <button type="button" data-inspector-tab="files" class="inspector-tab-btn studio-btn text-xs py-2 px-3">
+            Announcements &amp; Study Files
+          </button>
+        </div>
+      </div>
+
+      <div id="courseInspectorBody" class="studio-drawer-body space-y-5">
+        <!-- Populated by app.js -->
+      </div>
+    </div>
+  </aside>
+
+  <footer class="studio-shell py-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs" style="color: var(--ink-secondary);">
+    <div class="flex items-center gap-2">
+      <span class="font-bold text-sm" style="color: var(--ink);">Slated</span>
+      <span>•</span>
+      <span>Read-Only Student Workspace for Canvas LMS</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <button type="button" id="footerSecurityBtn" class="underline hover:opacity-80">Security &amp; Privacy Proof</button>
+      <button type="button" id="footerCmdBtn" class="underline hover:opacity-80">Command Palette (⌘K)</button>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
