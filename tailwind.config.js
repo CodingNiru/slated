@@ -1,5 +1,5 @@
 module.exports = {
-  content: ['./public/index.html', './public/app.js'],
+  content: ['./src/site-shell.html', './public/app.js'],
   darkMode: 'class',
   theme: {
     extend: {},

@@ -2288,10 +2288,12 @@ function createApp() {
     Promise.resolve(handleApiRequest(req, res)).catch(next);
   });
 
+  app.use(express.static(path.join(__dirname, 'dist')));
   app.use(express.static(path.join(__dirname, 'public')));
 
   app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    const distIndex = path.join(__dirname, 'dist', 'index.html');
+    res.sendFile(fs.existsSync(distIndex) ? distIndex : path.join(__dirname, 'src', 'site-shell.html'));
   });
 
   app.use((err, req, res, next) => {

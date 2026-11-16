@@ -1,0 +1,17 @@
+---
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const source = readFileSync(join(process.cwd(), 'src', 'site-shell.html'), 'utf8');
+const head = source.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i)?.[1];
+const body = source.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1];
+
+if (head === undefined || body === undefined) {
+  throw new Error('Could not parse the existing Slated HTML shell for Astro.');
+}
+---
+<!doctype html>
+<html lang="en" class="dark" data-palette="obsidian">
+  <head><Fragment set:html={head} /></head>
+  <body set:html={body}></body>
+</html>

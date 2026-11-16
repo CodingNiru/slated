@@ -286,7 +286,7 @@ async function buildBundle() {
   const distDir = path.join(__dirname, 'dist');
   fs.mkdirSync(distDir, { recursive: true });
 
-  let html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+  let html = fs.readFileSync(path.join(__dirname, 'src', 'site-shell.html'), 'utf8');
   const tailwindCss = fs.readFileSync(path.join(__dirname, 'public', 'tailwind.generated.css'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, 'public', 'styles.css'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, 'public', 'app.js'), 'utf8');
